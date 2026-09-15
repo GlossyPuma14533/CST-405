@@ -3,6 +3,17 @@
  *  TOPIC 1 · Compiler Design Phases
  * FILE: scanner.l   —   Phase 1: Lexical analysis
  * ----------------------------------------------------------------------------
+ * PHASE:      Lexical analysis — the first of the six phases
+ *             (scanner -> parser -> ast -> semantic -> tac -> codegen).
+ * RECEIVES:   A raw character stream: the file main.c opened as yyin.  There
+ *             is no previous phase; this is where the compiler meets the
+ *             outside world.
+ * PRODUCES:   A stream of (KIND, LEXEME, LINE, COLUMN) tokens, one per call
+ *             to yylex(), plus a count of the characters the language does
+ *             not admit.  In Topic 1 the consumer is main.c, which prints
+ *             them; in Topic 2 the consumer is bison's yyparse(), which
+ *             builds a syntax tree out of the same stream.
+ * ----------------------------------------------------------------------------
  * Flex reads the rules below and writes a finite automaton that recognizes
  * all of them at once.  You never write the automaton; you write the
  * vocabulary, and two rules decide everything about how it behaves:
@@ -15,9 +26,6 @@
  *                   "int" matches both, both match three characters, and
  *                   whichever is written first decides the outcome.
  *
- * Delete a keyword rule and watch that keyword come back as an ID.  That one
- * experiment explains rule order better than any paragraph can.
- *
  * WHAT COMES NEXT
  *   In Topic 2 this same file feeds bison instead of main.c.  The actions
  *   change from "record a token for printing" to "return a token number";
@@ -25,6 +33,7 @@
  * ==========================================================================*/
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include "tokens.h"
 
 int lexErrorCount = 0;
@@ -37,9 +46,12 @@ int  lastLine;
 int  lastCol;
 
 /* Record where the token that is being returned started, then advance the
- * column past it.  Flex tracks lines for us (%option yylineno) but not
- * columns, so we keep the column by hand — and a column number is half of
- * what makes an error message actually findable. */
+ * column past it.  Flex tracks lines for us but not columns, so we keep the
+ * column by hand — and a column number is half of what makes an error
+ * message actually findable.
+ *
+ * RETURNS: the token kind widened to int, because that is what yylex() is
+ * declared to return and what bison will expect in Topic 2. */
 static int tok(TokenKind k) {
     lastLine = lineNo;
     lastCol  = colNo;
@@ -58,6 +70,31 @@ static void skip(const char* s, int n) {
         else colNo++;
     }
 }
+
+/* Report one lexical error and KEEP GOING.
+ *
+ * WHY this does not exit: a scanner that stops at the first bad character
+ * makes the programmer rebuild once per typo.  Every error the automaton can
+ * still find after this one is a free diagnosis, so we report and resume.
+ * The count is what main.c turns into a non-zero exit status at the end.
+ *
+ * WHY stderr: the token TABLE on stdout stays a clean artifact, so
+ * `./lexer f.cm > table.txt` keeps the table and still shows the
+ * diagnostics on the terminal.  stdout is flushed first so that the two
+ * streams stay in order when both go to the same terminal. */
+static void lexError(int line, int col, int ch) {
+    lexErrorCount++;
+    fflush(stdout);
+    if (isprint(ch))
+        fprintf(stderr,
+                "  ✗ lexical error, line %d, column %d: "
+                "character not in the language: '%c'\n", line, col, ch);
+    else
+        fprintf(stderr,
+                "  ✗ lexical error, line %d, column %d: "
+                "character not in the language: byte 0x%02X\n",
+                line, col, (unsigned)ch);
+}
 %}
 
 %option noyywrap
@@ -73,32 +110,48 @@ number  {digit}+
 
 %%
 
- /* ══════════════════════════════════════════════════════════════════════
-  * YOUR TASK STARTS HERE.
+ /* == 1 · WHITESPACE AND COMMENTS =========================================
+  * These produce no token, but they are not free: every one of them moves
+  * the position of every token after it.  Each action calls skip(), which is
+  * what keeps lineNo and colNo honest across a comment that spans lines.
+  * Drop the skip() call and tests/04_comments.cm reports `x = 1;` on line 4
+  * instead of line 6.
+  * ====================================================================== */
+
+[ \t\r\n]+                      { skip(yytext, yyleng); }
+
+ /* Line comment: two slashes to the end of the line.  The newline itself is
+  * deliberately left for the whitespace rule above, so that exactly one rule
+  * in this file ever increments lineNo. */
+"//"[^\n]*                      { skip(yytext, yyleng); }
+
+ /* Well-formed block comment, possibly spanning lines.
+  * The body pattern reads as "anything that is not a star, or a run of stars
+  * not followed by a slash" — precisely the set of strings that cannot
+  * contain a closing delimiter.  Writing the body as .* instead would be
+  * wrong: longest match would swallow one comment, the code between it and
+  * the next comment, and the next comment, as a single match. */
+"/*"([^*]|\*+[^*/])*\*+"/"      { skip(yytext, yyleng); }
+
+ /* Unterminated block comment: an opening delimiter whose body runs to end
+  * of file.  This rule can only win when the rule above fails, because
+  * whenever a closing delimiter exists the well-formed rule matches strictly
+  * more characters and longest match prefers it.
   *
-  * Below this line, write one flex rule per row of the token table.  A rule
-  * is a PATTERN, whitespace, then an ACTION in braces:
-  *
-  *      "int"       { return tok(TOK_INT); }
-  *      {ident}     { return tok(TOK_ID);  }
-  *
-  * tok() is written for you above: it records the lexeme and position, keeps
-  * the column counter honest, and returns the kind.  Always return through
-  * it — never `return TOK_X;` directly, or your line and column numbers
-  * will be wrong and you will not notice until Topic 2.
-  *
-  * WORK IN THIS ORDER.  Build and run ./lexer after each step; a scanner is
-  * one of the few programs you can test after five minutes of writing.
-  *
-  *  1. WHITESPACE AND COMMENTS  (produce no token)
-  *       - [ \t\r\n]+
-  *       - a line comment:  "//" to end of line
-  *       - a block comment: /* ... * / , which may span lines
-  *     Call skip(yytext, yyleng) in each action, NOT nothing at all.  skip()
-  *     is what keeps lineNo and colNo correct across a multi-line comment.
-  *     Test with tests/04_comments.cm: `x = 1;` must report line 6.
-  *
-  *  2. KEYWORDS — int print return if else while for switch case default
+  * It consumes the rest of the file on purpose.  Reporting the error and
+  * then scanning the comment's prose as identifiers would bury one real
+  * diagnostic under a pile of fictional tokens. */
+"/*"([^*]|\*+[^*/])*\**         {
+                                    lexErrorCount++;
+                                    fflush(stdout);
+                                    fprintf(stderr,
+                                        "  ✗ lexical error, line %d, column %d: "
+                                        "unterminated block comment, "
+                                        "reached end of file\n", lineNo, colNo);
+                                    skip(yytext, yyleng);
+                                }
+
+  /*  2. KEYWORDS — int print return if else while for switch case default
   *     break.  These must be written ABOVE the identifier rule.  Write them
   *     below it instead, run tests/03_keywords_vs_ids.cm, and see what
   *     happens; then move them and understand why it changed.
