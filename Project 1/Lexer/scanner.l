@@ -151,21 +151,88 @@ number  {digit}+
                                     skip(yytext, yyleng);
                                 }
 
-  /*  2. KEYWORDS — int print return if else while for switch case default
-  *     break.  These must be written ABOVE the identifier rule.  Write them
-  *     below it instead, run tests/03_keywords_vs_ids.cm, and see what
-  *     happens; then move them and understand why it changed.
+  /* == 2 · KEYWORDS ========================================================
+  * Every keyword in the FULL course language, including the ones no topic
+  * before week 12 parses.  Recognizing a word the parser cannot yet use is
+  * free; discovering in week 12 that `switch` has been an identifier all
+  * semester is not.
   *
-  *  3. IDENTIFIERS AND NUMBERS — use the {ident} and {number} definitions
-  *     already declared above.
+  * These must stand ABOVE the {ident} rule.  "int" matches both rules at
+  * exactly three characters, longest match cannot break the tie, and first
+  * match hands it to whichever rule is written first.  Move this block below
+  * {ident} and tests/03_keywords_vs_ids.cm reports ID for every keyword.
+  * ====================================================================== */
+
+"int"                           { return tok(TOK_INT);     }
+"print"                         { return tok(TOK_PRINT);   }
+"return"                        { return tok(TOK_RETURN);  }
+"if"                            { return tok(TOK_IF);      }
+"else"                          { return tok(TOK_ELSE);    }
+"while"                         { return tok(TOK_WHILE);   }
+"for"                           { return tok(TOK_FOR);     }
+"switch"                        { return tok(TOK_SWITCH);  }
+"case"                          { return tok(TOK_CASE);    }
+"default"                       { return tok(TOK_DEFAULT); }
+"break"                         { return tok(TOK_BREAK);   }
+
+ /* == 3 · IDENTIFIERS AND INTEGER LITERALS ================================
+  * `integer` and `intx` reach this rule rather than the "int" rule above
+  * because longest match runs FIRST: the automaton takes the whole word and
+  * only then asks which rule owns it.  Rule order is never consulted,
+  * because there is no tie to break.
   *
-  *  4. TWO-CHARACTER OPERATORS — <= >= == != && ||
-  *     Then the one-character ones: + - * / < > ! =
-  *     Predict what happens if you omit the "<=" rule entirely, then try it.
-  *
-  *  5. DELIMITERS — ; : , ( ) { } [ ]
-  *
-  *  6. THE ERROR RULE — a single `.` pattern, written LAST.
+  * These two kinds are the reason tok() copies yytext.  For an ID or a NUM
+  * the text IS the information, and Topic 3 needs it to build symbol-table
+  * entries; for a semicolon the text carries nothing the kind does not.
+  * ====================================================================== */
+
+{ident}                         { return tok(TOK_ID);      }
+{number}                        { return tok(TOK_NUM);     }
+
+ /* == 4 · OPERATORS =======================================================
+  * The two-character operators are written above their one-character
+  * prefixes only as a readability convention.  Longest match, not order, is
+  * what makes "<=" one token: it consumes two characters and "<" consumes
+  * one.  Delete the "<=" rule and `x <= y` still scans — as LT then ASSIGN,
+  * which Topic 2 rejects as a syntax error with no hint that the real fault
+  * was a missing rule in this file.
+  * ====================================================================== */
+
+"<="                            { return tok(TOK_LE);      }
+">="                            { return tok(TOK_GE);      }
+"=="                            { return tok(TOK_EQ);      }
+"!="                            { return tok(TOK_NE);      }
+"&&"                            { return tok(TOK_AND);     }
+"||"                            { return tok(TOK_OR);      }
+
+"+"                             { return tok(TOK_PLUS);    }
+"-"                             { return tok(TOK_MINUS);   }
+"*"                             { return tok(TOK_STAR);    }
+"/"                             { return tok(TOK_SLASH);   }
+"<"                             { return tok(TOK_LT);      }
+">"                             { return tok(TOK_GT);      }
+"!"                             { return tok(TOK_NOT);     }
+"="                             { return tok(TOK_ASSIGN);  }
+
+
+  
+  /* == 5 · DELIMITERS ======================================================
+  * Punctuation carries no text worth keeping; the kind is the whole message.
+  * The scanner does not care that `)` must balance `(` — balance is a
+  * property of SENTENCES, and sentences are the parser's problem in Topic 2.
+  * ====================================================================== */
+
+";"                             { return tok(TOK_SEMI);     }
+":"                             { return tok(TOK_COLON);    }
+","                             { return tok(TOK_COMMA);    }
+"("                             { return tok(TOK_LPAREN);   }
+")"                             { return tok(TOK_RPAREN);   }
+"{"                             { return tok(TOK_LBRACE);   }
+"}"                             { return tok(TOK_RBRACE);   }
+"["                             { return tok(TOK_LBRACKET); }
+"]"                             { return tok(TOK_RBRACKET); }
+
+  /*  6. THE ERROR RULE — a single `.` pattern, written LAST.
   *     It must: report the offending character WITH ITS LINE AND COLUMN,
   *     increment lexErrorCount, advance colNo, and then CONTINUE SCANNING.
   *     Do not exit.  tests/05_lexical_errors.cm contains four bad characters
