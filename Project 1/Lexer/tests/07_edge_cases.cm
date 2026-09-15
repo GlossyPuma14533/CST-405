@@ -1,0 +1,16 @@
+/* Test 07 — written for this project, not one of the supplied files.
+ * Edge cases that are UNUSUAL but still lexically legal.
+ * Expect: 0 lexical errors, exit status 0.
+ * Checks: leading-underscore identifiers, digits inside identifiers, a
+ * ten-digit number, operators packed with no spaces between them, a block
+ * comment full of stars, and a line comment as the last line of the file
+ * with no newline after it. */
+int _x1;
+int longName_with_2_digits9;
+int n;
+n = 1234567890;
+n=n+1;
+if(n>=1&&n<=10){n=n-1;}
+/*** stars *** inside *** a comment ***/
+n = n * 2 / 2;
+// last line is a comment with no trailing newline

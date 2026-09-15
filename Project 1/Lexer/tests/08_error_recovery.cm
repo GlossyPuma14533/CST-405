@@ -1,0 +1,17 @@
+/* Test 08 — written for this project, not one of the supplied files.
+ * THIS FILE IS SUPPOSED TO FAIL, with SIX errors from ONE run.
+ * It exists to show that error recovery does not degrade: six bad bytes on
+ * six consecutive lines produce six messages, and every good token between
+ * them is still recognized.
+ * Expect: exit status 1, and exactly these six reports —
+ *   line 12 column 7  '#'      line 15 column 7  '?'
+ *   line 13 column 7  '%'      line 16 column 7  '\'
+ *   line 14 column 7  '~'      line 17 column 7  '.'
+ */
+int x;
+x = 1 # 2;
+x = 1 % 2;
+x = 1 ~ 2;
+x = 1 ? 2;
+x = 1 \ 2;
+x = 1 . 2;
