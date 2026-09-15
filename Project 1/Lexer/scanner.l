@@ -151,7 +151,7 @@ number  {digit}+
                                     skip(yytext, yyleng);
                                 }
 
-  /* == 2 · KEYWORDS ========================================================
+ /* == 2 · KEYWORDS ========================================================
   * Every keyword in the FULL course language, including the ones no topic
   * before week 12 parses.  Recognizing a word the parser cannot yet use is
   * free; discovering in week 12 that `switch` has been an identifier all
@@ -214,9 +214,7 @@ number  {digit}+
 "!"                             { return tok(TOK_NOT);     }
 "="                             { return tok(TOK_ASSIGN);  }
 
-
-  
-  /* == 5 · DELIMITERS ======================================================
+ /* == 5 · DELIMITERS ======================================================
   * Punctuation carries no text worth keeping; the kind is the whole message.
   * The scanner does not care that `)` must balance `(` — balance is a
   * property of SENTENCES, and sentences are the parser's problem in Topic 2.
@@ -232,24 +230,29 @@ number  {digit}+
 "["                             { return tok(TOK_LBRACKET); }
 "]"                             { return tok(TOK_RBRACKET); }
 
-  /*  6. THE ERROR RULE — a single `.` pattern, written LAST.
-  *     It must: report the offending character WITH ITS LINE AND COLUMN,
-  *     increment lexErrorCount, advance colNo, and then CONTINUE SCANNING.
-  *     Do not exit.  tests/05_lexical_errors.cm contains four bad characters
-  *     and expects four messages from one run.
+ /* == 6 · THE ERROR RULE ==================================================
+  * `.` matches any single character except a newline, so it matches
+  * everything the rules above did not.  It is written LAST because it
+  * matches exactly one character: any real rule that also matches here
+  * matches at least as much, and ties go to whoever is written first.  Put
+  * this rule at the top instead and the scanner recognizes nothing at all.
   *
-  *  7. UNTERMINATED BLOCK COMMENT — a `/*` that reaches end of file.
-  *     tests/06_unterminated_comment.cm expects exactly one error for this.
-  *     Hint: a second pattern for "an opening /* followed by anything that
-  *     never closes" will match only when the well-formed pattern cannot.
+  * The action does three things and no more: report with line and column,
+  * advance the column, and fall off the end WITHOUT returning.  Falling off
+  * the end is what resumes scanning; returning TOK_ERROR would hand the
+  * parser a token it has no rule for, and exiting would cap the run at one
+  * diagnosis.
   *
-  * WHEN YOU ARE DONE
-  *   make test           must report 0 errors for tests 01-04
-  *   ./lexer tests/05_lexical_errors.cm      must report 4 errors, exit 1
-  *   ./lexer tests/06_unterminated_comment.cm must report 1 error,  exit 1
-  * ══════════════════════════════════════════════════════════════════════ */
+  * KNOWN LIMITATION: each stray byte is one error, so a multi-byte UTF-8
+  * character pasted from a word processor reports once per byte.  Collapsing
+  * those into one message needs UTF-8 decoding that the rest of this
+  * compiler has no use for, so it is deliberately not done.
+  * ====================================================================== */
 
- /* TODO: write your rules here. */
-
+.                               {
+                                    lexError(lineNo, colNo,
+                                             (unsigned char)yytext[0]);
+                                    colNo++;
+                                }
 
 %%
