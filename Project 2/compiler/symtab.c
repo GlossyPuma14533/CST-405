@@ -90,7 +90,7 @@ void initSymTab(void) {
 
 int addVar(char* name, char* type) {
     /* ----------------------------------------------------------------
-     * TODO (Topic 2) — DECLARE A VARIABLE
+     * TODO (Topic 2) — DECLARE A VARIABLE -- Finished
      * Add `name` to the local table and give it a home in the frame.
      * Return the byte offset you assigned, or -1 if the name is already
      * declared — the caller uses -1 to report a duplicate declaration.
@@ -101,7 +101,12 @@ int addVar(char* name, char* type) {
      *
      * findIn() and appendTo() above do the searching and the allocation.
      * ---------------------------------------------------------------- */
-    return -1;
+    if (findIn(&locals, name)) return -1;          /* already declared      */
+ 
+    Symbol* s  = appendTo(&locals, name, type);
+    s->offset  = locals.nextOffset;                /* next free slot        */
+    locals.nextOffset += 4;                        /* one int = 4 bytes     */
+    return s->offset;
 }
 
 int addArray(char* name, int size) {
@@ -165,13 +170,15 @@ int addGlobalArray(char* name, int size) {
 
 Symbol* lookupSymbol(const char* name) {
     /* ----------------------------------------------------------------
-     * TODO (Topic 2) — RESOLVE A NAME
+     * TODO (Topic 2) — RESOLVE A NAME -- Finished
      * Return the symbol for `name`, or NULL if it is not declared.
      * Search the LOCAL table first and the GLOBAL table second: that order is
      * what makes an inner declaration shadow an outer one, and it is the
      * entire implementation of scoping at this milestone.
      * ---------------------------------------------------------------- */
-    (void)name;
+    Symbol* s = findIn(&locals, name);             /* innermost scope first */
+    if (s) return s;
+    if (globalsReady) return findIn(&globals, name);
     return NULL;
 }
 
