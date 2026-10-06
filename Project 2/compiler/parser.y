@@ -75,7 +75,7 @@ ASTNode* root = NULL;
  *   %type <node> program stmt_list stmt decl assign expr print_stmt
  * (bison rejects a %type for a non-terminal that has no rules yet,
  *  which is why only `program` is listed to begin with) */
-%type <node> program
+%type <node> program stmt_list stmt decl assign expr print_stmt
 
 /* OPERATOR PRECEDENCE AND ASSOCIATIVITY
  * Listed from lowest to highest precedence.
