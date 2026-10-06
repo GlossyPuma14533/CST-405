@@ -434,7 +434,7 @@ void generateMIPSFromTAC(const char* filename) {
 
         for (TACInstr* i = c->next; i && i->op != TAC_FUNC_END; i = i->next) {
             /* --------------------------------------------------------
-             * TODO (Topic 2) — TAC -> MIPS
+             * TODO (Topic 2) — TAC -> MIPS -- Finished
              * One case per TAC opcode.  Everything you need is already written above:
              *
              *     operandReg(name)   register holding that value (loads it, or does
@@ -471,11 +471,70 @@ void generateMIPSFromTAC(const char* filename) {
              *   code still works — just with an extra `lw` everywhere.  Reading your
              *   own output and spotting that is a genuinely good exercise.
              * -------------------------------------------------------- */
+         {
+                int used = 0;
+                for (int r = 0; r < NUM_TEMP_REGS; r++)
+                    if (regAlloc.regs[r].inUse) used++;
+                if (used > NUM_TEMP_REGS - 3) flushRegisters("make room");
+            }
+ 
+            switch (i->op) {
+                case TAC_DECL: {
+                    Symbol* s = lookupSymbol(i->result);
+                    if (s) fprintf(out, "    # int %s lives at %d($sp)\n", s->name, s->offset);
+                    break;
+                }
+ 
+                case TAC_ASSIGN: {
+                    int a = operandReg(i->arg1);
+                    int d = defReg(i->result);
+                    fprintf(out, "    move $t%d, $t%d        # %s = %s\n", d, a, i->result, i->arg1);
+                    break;
+                }
+ 
+                case TAC_ADD: case TAC_SUB: case TAC_MUL: case TAC_DIV: {
+                    int a = operandReg(i->arg1);
+                    int b = operandReg(i->arg2);
+                    int d = defReg(i->result);
+                    fprintf(out, "    %s  $t%d, $t%d, $t%d        # %s = %s %s %s\n",
+                            mnemonicFor(i->op), d, a, b,
+                            i->result, i->arg1,
+                            i->op == TAC_ADD ? "+" : i->op == TAC_SUB ? "-" :
+                            i->op == TAC_MUL ? "*" : "/", i->arg2);
+                    break;
+                }
+ 
+                case TAC_PRINT: {
+                    int a = operandReg(i->arg1);
+                    fprintf(out, "    move $a0, $t%d        # print(%s)\n", a, i->arg1);
+                    fprintf(out, "    li   $v0, 1             # syscall 1 = print integer\n");
+                    fprintf(out, "    syscall\n");
+                    fprintf(out, "    la   $a0, __nl\n");
+                    fprintf(out, "    li   $v0, 4             # syscall 4 = print string\n");
+                    fprintf(out, "    syscall\n");
+                    break;
+                }
+ 
+                case TAC_RETURN: {
+                    if (i->arg1) {
+                        int a = operandReg(i->arg1);
+                        fprintf(out, "    move $v0, $t%d        # return value\n", a);
+                    }
+                    flushRegisters("before return");   /* globals must reach memory */
+                    fprintf(out, "    j    %s__epilogue\n", funcLabel(currentFunc));
+                    break;
+                }
+ 
+                default:
+                    fprintf(out, "    # (TAC opcode %d is not generated in Topic 2)\n", (int)i->op);
+                    break;
+            }
         }
-
+ 
         flushRegisters("end of function body");
         emitEpilogue(currentFunc, frameSize);
     }
-
+ 
     fclose(out);
 }
+ 
