@@ -50,7 +50,7 @@ ASTNode* createVar(char* name) {
 }
 
 /* --------------------------------------------------------------------
- * TODO (Topic 2) — THE REMAINING AST CONSTRUCTORS
+ * TODO (Topic 2) — THE REMAINING AST CONSTRUCTORS -- Finished
  * createNum and createVar above are the pattern.  Every constructor does
  * the same four things:
  *
@@ -73,11 +73,82 @@ ASTNode* createVar(char* name) {
  * program before you write it.
  * -------------------------------------------------------------------- */
 
+/* Create a binary operation node: left op right */
+ASTNode* createBinOp(char op, ASTNode* left, ASTNode* right) {
+    ASTNode* node = malloc(sizeof(ASTNode));
+    node->type = NODE_BINOP;
+    node->lineno = yylineno;
+    node->data.binop.op = op;
+    node->data.binop.left = left;
+    node->data.binop.right = right;
+    return node;
+}
+ 
+/* Create a declaration node: int name; */
+ASTNode* createDecl(char* type, char* name) {
+    ASTNode* node = malloc(sizeof(ASTNode));
+    node->type = NODE_DECL;
+    node->lineno = yylineno;
+    node->data.decl.name = strdup(name);     /* own copies: the scanner's */
+    node->data.decl.varType = strdup(type);  /* buffer gets reused        */
+    return node;
+}
+ 
+/* Create an assignment node: var = value; */
+ASTNode* createAssign(char* var, ASTNode* value) {
+    ASTNode* node = malloc(sizeof(ASTNode));
+    node->type = NODE_ASSIGN;
+    node->lineno = yylineno;
+    node->data.assign.var = strdup(var);
+    node->data.assign.value = value;
+    return node;
+}
+ 
+/* Create a print node: print(expr); */
+ASTNode* createPrint(ASTNode* expr) {
+    ASTNode* node = malloc(sizeof(ASTNode));
+    node->type = NODE_PRINT;
+    node->lineno = yylineno;
+    node->data.expr = expr;
+    return node;
+}
+ 
+/* Link two statements into a list.  The grammar is left recursive, so
+ * stmt1 is the list built so far and stmt2 is the newly parsed statement:
+ *
+ *     a; b; c;      STMT_LIST
+ *                   ├── STMT_LIST
+ *                   │   ├── a
+ *                   │   └── b
+ *                   └── c
+ * Walking stmt first, then next, visits the statements in source order. */
+ASTNode* createStmtList(ASTNode* stmt1, ASTNode* stmt2) {
+    if (!stmt1) return stmt2;   /* a statement dropped by error recovery */
+    if (!stmt2) return stmt1;
+    ASTNode* node = malloc(sizeof(ASTNode));
+    node->type = NODE_STMT_LIST;
+    node->lineno = yylineno;
+    node->data.stmtlist.stmt = stmt1;
+    node->data.stmtlist.next = stmt2;
+    return node;
+}
+ 
+/* Text form of an operator character */
+const char* opText(char op) {
+    switch (op) {
+        case '+': return "+";
+        case '-': return "-";
+        case '*': return "*";
+        case '/': return "/";
+        default:  return "?";
+    }
+}
+
 
 /* Display the AST structure (for debugging and education) */
 void printAST(ASTNode* node, int level) {
     /* ----------------------------------------------------------------
-     * TODO (Topic 2) — THE TREE PRINTER
+     * TODO (Topic 2) — THE TREE PRINTER -- Finished
      * Print the tree, one node per line, indented two spaces per level.
      *
      *     if (!node) return;
@@ -92,4 +163,42 @@ void printAST(ASTNode* node, int level) {
      * Phase 2, and every bug you hit for the rest of the semester gets
      * diagnosed by staring at its output.  Write it early and make it good.
      * ---------------------------------------------------------------- */
+if (!node) return;
+ 
+    /* A statement list is a sequence, not a nesting: both halves print at
+     * the same level and the list node itself prints nothing. */
+    if (node->type == NODE_STMT_LIST) {
+        printAST(node->data.stmtlist.stmt, level);
+        printAST(node->data.stmtlist.next, level);
+        return;
+    }
+ 
+    for (int i = 0; i < level; i++) printf("  ");
+    switch (node->type) {
+        case NODE_NUM:
+            printf("NUM: %d\n", node->data.num);
+            break;
+        case NODE_VAR:
+            printf("VAR: %s\n", node->data.name);
+            break;
+        case NODE_BINOP:
+            printf("BINOP: %s\n", opText(node->data.binop.op));
+            printAST(node->data.binop.left, level + 1);
+            printAST(node->data.binop.right, level + 1);
+            break;
+        case NODE_DECL:
+            printf("DECL: %s %s\n", node->data.decl.varType, node->data.decl.name);
+            break;
+        case NODE_ASSIGN:
+            printf("ASSIGN: %s =\n", node->data.assign.var);
+            printAST(node->data.assign.value, level + 1);
+            break;
+        case NODE_PRINT:
+            printf("PRINT\n");
+            printAST(node->data.expr, level + 1);
+            break;
+        default:
+            printf("UNKNOWN NODE\n");
+            break;
+    }
 }
