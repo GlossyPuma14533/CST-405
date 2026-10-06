@@ -181,7 +181,7 @@ static void checkStmtList(ASTNode* node);
 /* Check expression for semantic correctness */
 static void checkExpr(ASTNode* node) {
     /* ----------------------------------------------------------------
-     * TODO (Topic 2) — CHECK AN EXPRESSION
+     * TODO (Topic 2) — CHECK AN EXPRESSION -- Finished
      * Walk the expression and report anything that cannot mean what it says.
      *
      *     NODE_NUM    always fine
@@ -200,13 +200,38 @@ static void checkExpr(ASTNode* node) {
      * Increment semInfo.errorCount for each error.  Do NOT stop at the first
      * one: report everything you can find in a single run.
      * ---------------------------------------------------------------- */
-    (void)node;
+    if (!node) return;
+ 
+    switch (node->type) {
+        case NODE_NUM:
+            break;                                   /* always fine */
+ 
+        case NODE_VAR:
+            if (!isVarDeclaredInScope(node->data.name)) {
+                fprintf(stderr, "\n╔════════════════════════════════════════════════════════════╗\n");
+                fprintf(stderr, "║ SEMANTIC ERROR - Undeclared Variable                      ║\n");
+                fprintf(stderr, "╚════════════════════════════════════════════════════════════╝\n");
+                fprintf(stderr, "  Location: Line %d\n", node->lineno);
+                fprintf(stderr, "  Error: variable '%s' is used but never declared\n", node->data.name);
+                fprintf(stderr, "  Suggestion: declare it first, e.g. 'int %s;'\n\n", node->data.name);
+                semInfo.errorCount++;
+            }
+            break;
+ 
+        case NODE_BINOP:
+            checkExpr(node->data.binop.left);
+            checkExpr(node->data.binop.right);
+            break;
+ 
+        default:
+            break;
+    }
 }
 
 /* Check statement */
 static void checkStmt(ASTNode* node) {
     /* ----------------------------------------------------------------
-     * TODO (Topic 2) — CHECK A STATEMENT
+     * TODO (Topic 2) — CHECK A STATEMENT -- Finished
      *     NODE_DECL    the name must NOT already be declared in this scope.
      *                  On success, add it: addVarToScope(name).
      *     NODE_ASSIGN  the target must already be declared; then check the
@@ -221,13 +246,63 @@ static void checkStmt(ASTNode* node) {
      * (a form this language does not have — but think about it) it should not.
      * Languages differ here, and this is where that decision gets made.
      * ---------------------------------------------------------------- */
-    (void)node;
+    if (!node) return;
+ 
+    switch (node->type) {
+        case NODE_DECL: {
+            char* name = node->data.decl.name;
+ 
+            if (isReservedName(name)) {              /* t0, L1, ... */
+                reportReserved(name, node->lineno);
+                semInfo.errorCount++;
+                break;
+            }
+            if (addVarToScope(name) != 0) {          /* -1: already declared */
+                fprintf(stderr, "\n╔════════════════════════════════════════════════════════════╗\n");
+                fprintf(stderr, "║ SEMANTIC ERROR - Duplicate Declaration                    ║\n");
+                fprintf(stderr, "╚════════════════════════════════════════════════════════════╝\n");
+                fprintf(stderr, "  Location: Line %d\n", node->lineno);
+                fprintf(stderr, "  Error: variable '%s' is already declared in this scope\n", name);
+                fprintf(stderr, "  Suggestion: remove the second declaration or pick a different name\n\n");
+                semInfo.errorCount++;
+            }
+            break;
+        }
+ 
+        case NODE_ASSIGN:
+            /* The target must exist.  The right-hand side is checked with the
+             * current scope, so  int x; x = x + 1;  is fine. */
+            if (!isVarDeclaredInScope(node->data.assign.var)) {
+                fprintf(stderr, "\n╔════════════════════════════════════════════════════════════╗\n");
+                fprintf(stderr, "║ SEMANTIC ERROR - Assignment to Undeclared Variable        ║\n");
+                fprintf(stderr, "╚════════════════════════════════════════════════════════════╝\n");
+                fprintf(stderr, "  Location: Line %d\n", node->lineno);
+                fprintf(stderr, "  Error: cannot assign to '%s' because it is not declared\n",
+                        node->data.assign.var);
+                fprintf(stderr, "  Suggestion: declare it first, e.g. 'int %s;'\n\n",
+                        node->data.assign.var);
+                semInfo.errorCount++;
+            }
+            checkExpr(node->data.assign.value);      /* keep looking: report everything */
+            break;
+ 
+        case NODE_PRINT:
+            checkExpr(node->data.expr);
+            break;
+ 
+        case NODE_STMT_LIST:
+            checkStmtList(node);
+            break;
+ 
+        default:
+            break;
+    }
 }
-
+ 
 /* Check statement list */
 static void checkStmtList(ASTNode* node) {
     if (!node) return;
-
+ 
     if (node->type == NODE_STMT_LIST) {
         checkStmt(node->data.stmtlist.stmt);
         checkStmtList(node->data.stmtlist.next);
@@ -235,30 +310,30 @@ static void checkStmtList(ASTNode* node) {
         checkStmt(node);
     }
 }
-
+ 
 int performSemanticAnalysis(ASTNode* root) {
     if (!root) {
         fprintf(stderr, "SEMANTIC ERROR: No AST to analyze\n");
         return -1;
     }
-
+ 
     trace("Running semantic analysis with function support...\n\n");
-
+ 
     /* Enter global scope */
     enterScope();
     trace("Entered global scope\n");
     printSemanticScopes();
-
+ 
     /* The starter language has no functions, so one walk over the statement
      * list is the whole analysis.  Topic 3 replaces this with two passes. */
     checkStmtList(root);
-
+ 
     /* Exit global scope */
     exitScope();
-
+ 
     return semInfo.errorCount > 0 ? -1 : 0;
 }
-
+ 
 /* Print semantic analysis summary */
 void printSemanticSummary() {
     trace("═══════════════════════════════════════════\n");
@@ -267,7 +342,7 @@ void printSemanticSummary() {
     trace("Errors found:       %d\n", semInfo.errorCount);
     trace("Warnings found:     %d\n", semInfo.warningCount);
     trace("\n");
-
+ 
     if (semInfo.errorCount == 0) {
         trace("✓ Semantic analysis passed - program is semantically correct!\n");
     } else {
@@ -275,3 +350,4 @@ void printSemanticSummary() {
     }
     trace("═══════════════════════════════════════════\n\n");
 }
+ 
