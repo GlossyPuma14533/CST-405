@@ -139,7 +139,7 @@ static void generateTACStmt(ASTNode* node);
 /* Generate TAC for expression - returns the temp/var holding result */
 char* generateTACExpr(ASTNode* node) {
     /* ----------------------------------------------------------------
-     * TODO (Topic 2) — EXPRESSION -> THREE-ADDRESS CODE
+     * TODO (Topic 2) — EXPRESSION -> THREE-ADDRESS CODE -- Finished
      * Return the NAME of the location holding this expression's value.  That
      * return value is the whole contract, and it is what makes the recursion
      * work: a caller does not care whether it gets back a literal, a variable
@@ -162,8 +162,48 @@ char* generateTACExpr(ASTNode* node) {
      * four, or if a temporary number is reused while still live, print the
      * TAC and walk it by hand — that listing is the point of this phase.
      * ---------------------------------------------------------------- */
-    (void)node;
-    return NULL;
+    if (!node) return NULL;
+ 
+    switch (node->type) {
+        case NODE_NUM: {
+            char* s = malloc(24);
+            snprintf(s, 24, "%d", node->data.num);
+            return s;
+        }
+ 
+        case NODE_VAR:
+            return strdup(node->data.name);
+ 
+        case NODE_BINOP: {
+            char* t     = allocTemp();
+            char* left  = generateTACExpr(node->data.binop.left);
+            char* right = generateTACExpr(node->data.binop.right);
+ 
+            TACOp op;
+            switch (node->data.binop.op) {
+                case '+': op = TAC_ADD; break;
+                case '-': op = TAC_SUB; break;
+                case '*': op = TAC_MUL; break;
+                case '/': op = TAC_DIV; break;
+                default:  op = TAC_ADD; break;
+            }
+            appendTAC(createTAC(op, left, right, t));
+ 
+            /* Release operand temporaries only AFTER emitting.  freeTemp must
+             * only ever see a real temporary (t followed by digits only): a
+             * user variable such as `total` also starts with 't'. */
+            if (left[0] == 't' && left[1] && strspn(left + 1, "0123456789") == strlen(left + 1))
+                freeTemp(left);
+            if (right[0] == 't' && right[1] && strspn(right + 1, "0123456789") == strlen(right + 1))
+                freeTemp(right);
+            free(left);
+            free(right);
+            return t;
+        }
+ 
+        default:
+            return NULL;
+    }
 }
 
 /* Generate TAC for statement list */
@@ -181,7 +221,7 @@ static void generateTACStmtList(ASTNode* node) {
 /* Generate TAC for a statement */
 static void generateTACStmt(ASTNode* node) {
     /* ----------------------------------------------------------------
-     * TODO (Topic 2) — STATEMENT -> THREE-ADDRESS CODE
+     * TODO (Topic 2) — STATEMENT -> THREE-ADDRESS CODE -- Finished
      *     NODE_DECL    emit TAC_DECL — no code runs, but the back end needs to
      *                  know the variable exists so it can reserve a slot
      *     NODE_ASSIGN  evaluate the expression, then emit TAC_ASSIGN
@@ -190,7 +230,38 @@ static void generateTACStmt(ASTNode* node) {
      *
      * Use appendTAC(createTAC(op, arg1, arg2, result)) to emit.
      * ---------------------------------------------------------------- */
-    (void)node;
+    if (!node) return;
+ 
+    switch (node->type) {
+        case NODE_DECL:
+            appendTAC(createTAC(TAC_DECL, node->data.decl.varType, NULL, node->data.decl.name));
+            break;
+ 
+        case NODE_ASSIGN: {
+            char* v = generateTACExpr(node->data.assign.value);
+            appendTAC(createTAC(TAC_ASSIGN, v, NULL, node->data.assign.var));
+            if (v[0] == 't' && v[1] && strspn(v + 1, "0123456789") == strlen(v + 1))
+                freeTemp(v);
+            free(v);
+            break;
+        }
+ 
+        case NODE_PRINT: {
+            char* v = generateTACExpr(node->data.expr);
+            appendTAC(createTAC(TAC_PRINT, v, NULL, NULL));
+            if (v[0] == 't' && v[1] && strspn(v + 1, "0123456789") == strlen(v + 1))
+                freeTemp(v);
+            free(v);
+            break;
+        }
+ 
+        case NODE_STMT_LIST:
+            generateTACStmtList(node);
+            break;
+ 
+        default:
+            break;
+    }
 }
 
 void generateTAC(ASTNode* node) {
@@ -499,7 +570,7 @@ static TACList copyList(const TACList* src) {
  * -----------------------------------------------------------------------*/
 static TACList optimizePass(TACList* in) {
     /* ----------------------------------------------------------------
-     * TODO (Topic 2) — ONE OPTIMIZATION PASS
+     * TODO (Topic 2) — ONE OPTIMIZATION PASS -- Finished 
      * Copy `in` to `out`, rewriting what you can along the way.  Start with
      * the two transformations that pay off immediately on this language:
      *
@@ -523,14 +594,131 @@ static TACList optimizePass(TACList* in) {
      * run again, and in the matching optStats field so main.c can report it.
      * ---------------------------------------------------------------- */
     TACList out = { NULL, NULL, in->tempCount, in->labelCount };
+ 
+    /* Facts keep pointers into `out`'s strings, so a new fact table is built
+     * for every pass and no string is freed while the pass is running. */
+    clearFacts();
+ 
     for (TACInstr* c = in->head; c; c = c->next) {
         TACInstr* n = createTAC(c->op, c->arg1, c->arg2, c->result);
         if (!out.head) out.head = out.tail = n;
         else { out.tail->next = n; out.tail = n; }
+ 
+        switch (n->op) {
+            /* A label ends a basic block: control may arrive from anywhere,
+             * so nothing learned so far is still guaranteed.  A function
+             * boundary is the same. */
+            case TAC_LABEL:
+            case TAC_FUNC_BEGIN:
+            case TAC_FUNC_END:
+                clearFacts();
+                break;
+ 
+            case TAC_ADD: case TAC_SUB: case TAC_MUL: case TAC_DIV:
+            case TAC_LT:  case TAC_GT:  case TAC_LE:  case TAC_GE:
+            case TAC_EQ:  case TAC_NE:  case TAC_AND: case TAC_OR: {
+                /* CONSTANT PROPAGATION into both operands */
+                const char* k;
+                if (!isConstantNumber(n->arg1) && (k = lookupFact(n->arg1, 1))) {
+                    n->arg1 = strdup(k);
+                    optStats.constProp++; changesThisPass++;
+                }
+                if (!isConstantNumber(n->arg2) && (k = lookupFact(n->arg2, 1))) {
+                    n->arg2 = strdup(k);
+                    optStats.constProp++; changesThisPass++;
+                }
+                /* CONSTANT FOLDING */
+                int folded;
+                char* r = foldConstants(n->op, n->arg1, n->arg2, &folded);
+                if (folded) {
+                    n->op   = TAC_ASSIGN;
+                    n->arg1 = r;
+                    n->arg2 = NULL;
+                    optStats.constFold++; changesThisPass++;
+                    recordFact(n->result, n->arg1, 1);
+                } else {
+                    dropFactsAbout(n->result);
+                }
+                break;
+            }
+ 
+            case TAC_ASSIGN: {
+                const char* k;
+                if (!isConstantNumber(n->arg1) && (k = lookupFact(n->arg1, 1))) {
+                    n->arg1 = strdup(k);
+                    optStats.constProp++; changesThisPass++;
+                }
+                if (isConstantNumber(n->arg1)) recordFact(n->result, n->arg1, 1);
+                else                           dropFactsAbout(n->result);
+                break;
+            }
+ 
+            case TAC_PRINT:
+            case TAC_RETURN: {
+                const char* k;
+                if (n->arg1 && !isConstantNumber(n->arg1) && (k = lookupFact(n->arg1, 1))) {
+                    n->arg1 = strdup(k);
+                    optStats.constProp++; changesThisPass++;
+                }
+                break;
+            }
+ 
+            case TAC_CALL:
+                if (n->result) dropFactsAbout(n->result);
+                dropNonTempFacts();
+                break;
+ 
+            case TAC_DECL:
+                if (n->result) dropFactsAbout(n->result);
+                break;
+ 
+            default:
+                break;
+        }
     }
+ 
+    /* DEAD CODE ELIMINATION for compiler temporaries.  After propagation, a
+     * temporary such as  t0 = 18  is often never read again.  Only a pure
+     * computation or a copy into a TEMPORARY is removed; stores to user
+     * variables are always kept. */
+    TACInstr* prev = NULL;
+    TACInstr* cur  = out.head;
+    while (cur) {
+        int removable = 0;
+        const char* r = cur->result;
+        int isTmp = r && r[0] == 't' && r[1] && strspn(r + 1, "0123456789") == strlen(r + 1);
+ 
+        if (isTmp && (mnemonicIsPure(cur->op) || cur->op == TAC_ASSIGN)) {
+            int live = 0;
+            for (TACInstr* f = cur->next; f; f = f->next) {
+                if ((f->arg1 && strcmp(f->arg1, r) == 0) ||
+                    (f->arg2 && strcmp(f->arg2, r) == 0)) { live = 1; break; }
+                if (f->op == TAC_ARRAY_STORE && f->result && strcmp(f->result, r) == 0) { live = 1; break; }
+                /* Control flow: be conservative, assume the value is needed */
+                if (f->op == TAC_LABEL || f->op == TAC_GOTO ||
+                    f->op == TAC_IF_FALSE || f->op == TAC_IF_TRUE) { live = 1; break; }
+                if (f->op == TAC_FUNC_END) break;
+                /* Redefined before any read: the old value is dead */
+                if (f->result && f->op != TAC_ARRAY_STORE && strcmp(f->result, r) == 0) break;
+            }
+            removable = !live;
+        }
+ 
+        if (removable) {
+            TACInstr* dead = cur;
+            cur = cur->next;
+            if (prev) prev->next = cur; else out.head = cur;
+            optStats.deadCode++; changesThisPass++;
+            (void)dead;
+        } else {
+            prev = cur;
+            cur  = cur->next;
+        }
+    }
+    out.tail = prev;
     return out;
 }
-
+ 
 void optimizeTAC(void) {
     memset(&optStats, 0, sizeof optStats);
     optStats.instructionsBefore = countTAC(&tacList);
