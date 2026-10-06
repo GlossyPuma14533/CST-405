@@ -96,7 +96,7 @@ ASTNode* root = NULL;
 %%
 
 /* --------------------------------------------------------------------
- * TODO (Topic 2) — THE GRAMMAR
+ * TODO (Topic 2) — THE GRAMMAR -- Finished
  * Everything above this line is given: the token declarations, the
  * precedence table, and the union that lets a rule hand back an ASTNode*.
  * Below it, write the rules.  Each rule needs a semantic action in { }
@@ -142,15 +142,81 @@ ASTNode* root = NULL;
  *   Error messages are most of what people judge a compiler by.
  * -------------------------------------------------------------------- */
 
-/* A placeholder so that `make` succeeds before you have written anything.
- * It accepts exactly one program — the empty one — and builds no tree.
- * Delete it as soon as you have a real `program` rule. */
-program:
-    /* empty */ { root = NULL; }
+/* PROGRAM
+ * `root` is assigned here and nowhere else.  If it were still NULL after a
+ * successful parse, every later phase would silently do nothing. */
+program
+    : stmt_list                 { root = $1; $$ = $1; }
     ;
 
-/* TODO: write your grammar rules here. */
+/* STATEMENT LIST
+ * Left recursive: $1 is the list built so far, $2 is the newest statement. */
+stmt_list
+    : stmt                      { $$ = $1; }
+    | stmt_list stmt            { $$ = createStmtList($1, $2); }
+    ;
 
+stmt
+    : decl                      { $$ = $1; }
+    | assign                    { $$ = $1; }
+    | print_stmt                { $$ = $1; }
+    ;
+
+/* DECLARATION:  int x;
+ * The scanner strdup'd the identifier and createDecl copies it again, so the
+ * rule that received it from the scanner must free it. */
+decl
+    : INT ID ';'                { $$ = createDecl("int", $2); free($2); }
+    | INT ID error              {
+                                    fprintf(stderr, "Syntax Error at line %d: "
+                                            "missing ';' after declaration of '%s'\n",
+                                            yylineno, $2);
+                                    free($2);
+                                    $$ = NULL;
+                                    YYABORT;
+                                }
+    ;
+
+/* ASSIGNMENT:  x = expr;  */
+assign
+    : ID '=' expr ';'           { $$ = createAssign($1, $3); free($1); }
+    | ID '=' expr error         {
+                                    fprintf(stderr, "Syntax Error at line %d: "
+                                            "missing ';' after assignment to '%s'\n",
+                                            $3->lineno, $1);
+                                    free($1);
+                                    $$ = NULL;
+                                    YYABORT;
+                                }
+    ;
+
+/* EXPRESSION
+ * '+' is declared %left above, so  a + b + c  groups as (a + b) + c. */
+expr
+    : NUM                       { $$ = createNum($1); }
+    | ID                        { $$ = createVar($1); free($1); }
+    | expr '+' expr             { $$ = createBinOp('+', $1, $3); }
+    ;
+
+/* PRINT:  print(expr);  */
+print_stmt
+    : PRINT '(' expr ')' ';'    { $$ = createPrint($3); }
+    | PRINT '(' expr ')' error  {
+                                    fprintf(stderr, "Syntax Error at line %d: "
+                                            "missing ';' after print statement\n",
+                                            $3->lineno);
+                                    $$ = NULL;
+                                    YYABORT;
+                                }
+    ;
+
+/* ERROR PRODUCTIONS
+ * Each `error` alternative above catches a statement whose terminating ';' is
+ * missing and names the mistake instead of printing a bare "syntax error".
+ * YYABORT ends the parse after the message: yyparse() then returns non-zero,
+ * so main() stops instead of compiling a program that was never valid.  (Using
+ * `yyerrok` here would let the parser recover, return 0, and compile the
+ * damaged program.) */
 
 %%
 
