@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *                        ^^^  this file
  *
+ *   RECEIVES : constructor calls from the grammar actions in parser.y
+ *   PRODUCES : AST nodes (with line numbers) for semantic.c and tac.c; printAST() for display
+ *
  * WHAT IS NEW IN TOPIC 2
  *   • One constructor per node kind, plus a tree printer
  *

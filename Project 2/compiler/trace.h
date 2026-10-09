@@ -5,6 +5,9 @@
  * THE PIPELINE, AND WHERE THIS FILE SITS IN IT
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *
+ *   RECEIVES : trace() calls from every phase
+ *   PRODUCES : phase narration on stdout (silenced by -q)
+ *
  * UNCHANGED SINCE TOPIC 1 — the interfaces held, which is the point
  *
  * WHAT COMES NEXT

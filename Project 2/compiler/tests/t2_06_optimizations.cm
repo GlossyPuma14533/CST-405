@@ -1,0 +1,22 @@
+/* Expected output: 7  7  14  0
+ * A program written to give the optimizer something to do.
+ *   - x + 0 and 0 + x       -> algebraic simplification (TAC)
+ *   - b = a ; uses of b     -> copy / constant propagation (TAC)
+ *   - a + b with known a, b -> constant folding (TAC)
+ *   - unused temporaries    -> dead code elimination (TAC)
+ *   - return at end of main -> jump-to-next removed by the PEEPHOLE pass (MIPS)
+ * Compare out.tac with out.optimized.tac to see each rewrite. */
+int a;
+int b;
+int c;
+int zero;
+
+a = 7;
+b = a;          // b is a copy of a
+zero = 0;
+c = b + 0;      // algebraic identity: x + 0 = x
+print(c);
+c = 0 + c + zero;
+print(c);
+print(c + b);
+print(zero + zero);

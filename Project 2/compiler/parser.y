@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *              ^^^^^^  this file
  *
+ *   RECEIVES : tokens from the scanner (yylex)
+ *   PRODUCES : the AST rooted at `root`, or a syntax error with its line
+ *
  * WHAT IS NEW IN TOPIC 2
  *   • The starter grammar: a program is a list of statements
  *   • Declaration, assignment, addition, and print
@@ -55,7 +58,32 @@ extern int yylineno;  /* Line number from scanner */
 
 void yyerror(const char* s);
 ASTNode* root = NULL;
+
+/* DEFERRED SYNTAX ERRORS
+ * Bison calls yyerror() the instant it hits a bad token — BEFORE it knows
+ * whether one of our error productions below will recognise the mistake.
+ * So yyerror() only REMEMBERS the generic message.  If an error production
+ * fires, it prints a precise message ("missing ';' after ...") and discards
+ * the generic one; otherwise main() calls flushSyntaxError() to print it.
+ * Result: exactly one, as-specific-as-possible message per error. */
+static char pendingError[512];
+static int  pendingLine = 0;
+static int  hasPendingError = 0;
+static void discardPendingError(void) { hasPendingError = 0; }
+void flushSyntaxError(void);
 %}
+
+/* Ask bison for messages that say what it found and what it expected:
+ *   "syntax error, unexpected ID, expecting ';' or '+'"
+ * instead of a bare "syntax error". */
+%define parse.error verbose
+
+/* Track source locations (@n) for every symbol.  The scanner fills yylloc
+ * with each token's line (YY_USER_ACTION in scanner.l).  WHY: a missing ';'
+ * is only noticed when the NEXT token arrives — often on the next line — so
+ * yylineno at that moment points one line too far.  @n gives the line of the
+ * statement that is actually missing its semicolon. */
+%locations
 
 /* SEMANTIC VALUES UNION */
 %union {
@@ -168,9 +196,10 @@ stmt
 decl
     : INT ID ';'                { $$ = createDecl("int", $2); free($2); }
     | INT ID error              {
+                                    discardPendingError();
                                     fprintf(stderr, "Syntax Error at line %d: "
                                             "missing ';' after declaration of '%s'\n",
-                                            yylineno, $2);
+                                            @2.first_line, $2);
                                     free($2);
                                     $$ = NULL;
                                     YYABORT;
@@ -181,9 +210,10 @@ decl
 assign
     : ID '=' expr ';'           { $$ = createAssign($1, $3); free($1); }
     | ID '=' expr error         {
+                                    discardPendingError();
                                     fprintf(stderr, "Syntax Error at line %d: "
                                             "missing ';' after assignment to '%s'\n",
-                                            $3->lineno, $1);
+                                            @3.last_line, $1);
                                     free($1);
                                     $$ = NULL;
                                     YYABORT;
@@ -202,9 +232,10 @@ expr
 print_stmt
     : PRINT '(' expr ')' ';'    { $$ = createPrint($3); }
     | PRINT '(' expr ')' error  {
+                                    discardPendingError();
                                     fprintf(stderr, "Syntax Error at line %d: "
                                             "missing ';' after print statement\n",
-                                            $3->lineno);
+                                            @4.first_line);
                                     $$ = NULL;
                                     YYABORT;
                                 }
@@ -221,6 +252,18 @@ print_stmt
 %%
 
 /* ERROR HANDLING */
+/* yyerror: remember the message and the line it happened on (see
+ * DEFERRED SYNTAX ERRORS in the prologue). */
 void yyerror(const char* s) {
-    fprintf(stderr, "Syntax Error at line %d: %s\n", yylineno, s);
+    snprintf(pendingError, sizeof pendingError, "%s", s);
+    pendingLine = yylineno;
+    hasPendingError = 1;
+}
+
+/* Print a syntax error no error production claimed.  Called by main()
+ * whenever yyparse() fails. */
+void flushSyntaxError(void) {
+    if (hasPendingError)
+        fprintf(stderr, "Syntax Error at line %d: %s\n", pendingLine, pendingError);
+    hasPendingError = 0;
 }

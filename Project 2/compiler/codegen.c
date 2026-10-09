@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *                                                  ^^^^^^^  this file
  *
+ *   RECEIVES : the OPTIMIZED TAC list from tac.c
+ *   PRODUCES : a MIPS .s file that runs in SPIM / QtSPIM (after a peephole pass)
+ *
  * WHAT IS NEW IN TOPIC 2
  *   • TAC -> MIPS: a register cache over memory homes, and syscalls for print
  *
@@ -403,6 +406,199 @@ static void emitDataSection(TACInstr* head) {
     fprintf(out, "\n.text\n.globl main\n");
 }
 
+/* ==========================================================================
+ * PART 5 — PEEPHOLE OPTIMIZATION (on the generated MIPS)
+ * --------------------------------------------------------------------------
+ * The TAC optimizer (tac.c) works on the program's MEANING.  Some waste only
+ * becomes visible once real instructions exist — it is created by the
+ * translation itself.  A peephole optimizer slides a small window (here: two
+ * adjacent instructions) over the finished assembly and replaces patterns it
+ * recognises with something cheaper.  It knows nothing about the source
+ * language; it only knows MIPS.
+ *
+ *   PATTERN                                   REWRITE
+ *   ---------------------------------------   ------------------------------
+ *   1. move $X, $X                            (deleted — does nothing)
+ *   2. j    L            followed by   L:     (deleted — jump to next line;
+ *                                              this is the FLOW optimization
+ *                                              that every function's return
+ *                                              produces)
+ *   3. sw   $r, A        then  lw $r, A       lw deleted — $r already holds it
+ *   4. move $a, $b       then  move $b, $a    second move deleted
+ *   5. li   $tA, K       then  move $R, $tA   li $R, K   (only when $tA is
+ *                                              never mentioned again, so the
+ *                                              scratch register was pointless)
+ *
+ * The window runs repeatedly until nothing changes, exactly like the TAC
+ * optimizer: one rewrite can expose another.
+ *
+ * KNOWN LIMITATIONS
+ *   • The window is two instructions wide, so a pattern split by a third
+ *     instruction is missed.
+ *   • Pattern 5 proves $tA dead by scanning the REST OF THE FILE, not just
+ *     the basic block — safe but conservative (a reuse of $tA in a later
+ *     function blocks the rewrite).
+ *   • Lines longer than PH_LINE_LEN would be split; the generator never
+ *     emits lines that long.
+ * ========================================================================*/
+#define PH_MAX_LINES 20000
+#define PH_LINE_LEN  256
+
+static char* phLines[PH_MAX_LINES];
+static int   phCount;
+static int   phStats[6];                 /* applications of patterns 1..5   */
+
+/* The instruction part of a line: leading blanks skipped, comment removed,
+ * trailing blanks removed.  Written into `dst`. */
+static void phCore(const char* line, char* dst, size_t n) {
+    while (*line == ' ' || *line == '\t') line++;
+    size_t i = 0;
+    while (line[i] && line[i] != '#' && line[i] != '\n' && i < n - 1) { dst[i] = line[i]; i++; }
+    while (i > 0 && (dst[i-1] == ' ' || dst[i-1] == '\t')) i--;
+    dst[i] = '\0';
+}
+
+/* Split "op a, b, c" into op and up to three operands (whitespace trimmed).
+ * Returns the number of operands found. */
+static int phSplit(const char* core, char* op, char args[3][64]) {
+    op[0] = args[0][0] = args[1][0] = args[2][0] = '\0';
+    if (sscanf(core, "%15s", op) != 1) return 0;
+    const char* p = core + strlen(op);
+    int n = 0;
+    while (*p && n < 3) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        int k = 0;
+        while (*p && *p != ',' && k < 63) args[n][k++] = *p++;
+        while (k > 0 && (args[n][k-1] == ' ' || args[n][k-1] == '\t')) k--;
+        args[n][k] = '\0';
+        n++;
+    }
+    return n;
+}
+
+/* Is `reg` (e.g. "$t4") mentioned in the instruction part of any line from
+ * index `from` onward?  Used to prove a scratch register is dead. */
+static int phRegUsedFrom(int from, const char* reg) {
+    char core[PH_LINE_LEN];
+    size_t len = strlen(reg);
+    for (int i = from; i < phCount; i++) {
+        if (!phLines[i]) continue;
+        phCore(phLines[i], core, sizeof core);
+        for (char* hit = strstr(core, reg); hit; hit = strstr(hit + 1, reg))
+            if (hit[len] < '0' || hit[len] > '9') return 1;   /* $t1 is not $t10 */
+    }
+    return 0;
+}
+
+/* Index of the next line holding an instruction or label (skipping blank
+ * and comment-only lines), or -1. */
+static int phNext(int i) {
+    char core[PH_LINE_LEN];
+    for (int j = i + 1; j < phCount; j++) {
+        if (!phLines[j]) continue;
+        phCore(phLines[j], core, sizeof core);
+        if (core[0]) return j;
+    }
+    return -1;
+}
+
+static void phDelete(int i, const char* why) {
+    char core[PH_LINE_LEN];
+    phCore(phLines[i], core, sizeof core);
+    trace("    removed   %-28s  (%s)\n", core, why);
+    free(phLines[i]);
+    phLines[i] = NULL;
+}
+
+static void peepholeOptimizeFile(const char* filename) {
+    FILE* f = fopen(filename, "r");
+    if (!f) return;
+    char buf[PH_LINE_LEN];
+    phCount = 0;
+    memset(phStats, 0, sizeof phStats);
+    while (phCount < PH_MAX_LINES && fgets(buf, sizeof buf, f))
+        phLines[phCount++] = strdup(buf);
+    fclose(f);
+
+    trace("\n  Peephole optimization (2-instruction window over the MIPS):\n");
+
+    int changed;
+    do {
+        changed = 0;
+        for (int i = 0; i < phCount; i++) {
+            if (!phLines[i]) continue;
+            char c1[PH_LINE_LEN], c2[PH_LINE_LEN];
+            char op1[16], op2[16], a1[3][64], a2[3][64];
+            phCore(phLines[i], c1, sizeof c1);
+            if (!c1[0]) continue;
+            int n1 = phSplit(c1, op1, a1);
+
+            /* 1. move $X, $X */
+            if (strcmp(op1, "move") == 0 && n1 == 2 && strcmp(a1[0], a1[1]) == 0) {
+                phDelete(i, "self-move");
+                phStats[1]++; changed = 1; continue;
+            }
+
+            int j = phNext(i);
+            if (j < 0) continue;
+            phCore(phLines[j], c2, sizeof c2);
+            int n2 = phSplit(c2, op2, a2);
+
+            /* 2. j L ; L:   — jump to the next instruction */
+            if (strcmp(op1, "j") == 0 && n1 == 1) {
+                size_t L = strlen(a1[0]);
+                if (strncmp(c2, a1[0], L) == 0 && c2[L] == ':' && c2[L+1] == '\0') {
+                    phDelete(i, "jump to next instruction");
+                    phStats[2]++; changed = 1; continue;
+                }
+            }
+
+            /* Patterns 3-5 need two instructions back to back with no label
+             * between them (a label means control can arrive in the middle). */
+            if (c2[strlen(c2) - 1] == ':') continue;
+
+            /* 3. sw $r, A ; lw $r, A */
+            if (strcmp(op1, "sw") == 0 && strcmp(op2, "lw") == 0 && n1 == 2 && n2 == 2 &&
+                strcmp(a1[0], a2[0]) == 0 && strcmp(a1[1], a2[1]) == 0) {
+                phDelete(j, "value already in register");
+                phStats[3]++; changed = 1; continue;
+            }
+
+            /* 4. move $a, $b ; move $b, $a */
+            if (strcmp(op1, "move") == 0 && strcmp(op2, "move") == 0 && n1 == 2 && n2 == 2 &&
+                strcmp(a1[0], a2[1]) == 0 && strcmp(a1[1], a2[0]) == 0) {
+                phDelete(j, "move back and forth");
+                phStats[4]++; changed = 1; continue;
+            }
+
+            /* 5. li $tA, K ; move $R, $tA   with $tA dead afterwards */
+            if (strcmp(op1, "li") == 0 && strcmp(op2, "move") == 0 && n1 == 2 && n2 == 2 &&
+                strcmp(a1[0], a2[1]) == 0 && !phRegUsedFrom(j + 1, a1[0])) {
+                char repl[PH_LINE_LEN];
+                trace("    combined  %-28s  +  %s\n", c1, c2);
+                snprintf(repl, sizeof repl, "    li   %s, %s        # peephole: was li %s + move\n",
+                         a2[0], a1[1], a1[0]);
+                free(phLines[i]); phLines[i] = NULL;
+                free(phLines[j]); phLines[j] = strdup(repl);
+                phStats[5]++; changed = 1; continue;
+            }
+        }
+    } while (changed);
+
+    int total = phStats[1] + phStats[2] + phStats[3] + phStats[4] + phStats[5];
+    if (total == 0) trace("    (no opportunities found)\n");
+    trace("  Peephole rewrites: %d  [self-move %d, jump-to-next %d, redundant load %d,"
+          " move pair %d, li+move %d]\n",
+          total, phStats[1], phStats[2], phStats[3], phStats[4], phStats[5]);
+
+    f = fopen(filename, "w");
+    if (!f) return;
+    for (int i = 0; i < phCount; i++)
+        if (phLines[i]) { fputs(phLines[i], f); free(phLines[i]); }
+    fclose(f);
+}
+
 void generateMIPSFromTAC(const char* filename) {
     out = fopen(filename, "w");
     if (!out) { fprintf(stderr, "Cannot open output file %s\n", filename); exit(1); }
@@ -536,5 +732,8 @@ void generateMIPSFromTAC(const char* filename) {
     }
  
     fclose(out);
+
+    /* Last step of the back end: clean up the finished assembly. */
+    peepholeOptimizeFile(filename);
 }
  

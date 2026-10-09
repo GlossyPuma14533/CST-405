@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *                                           ^^^  this file
  *
+ *   RECEIVES : the semantically checked AST
+ *   PRODUCES : unoptimized TAC (.tac) and optimized TAC (.optimized.tac) for codegen.c
+ *
  * WHAT IS NEW IN TOPIC 2
  *   • AST -> three-address code, plus the optimizer skeleton
  *
@@ -330,7 +333,8 @@ void formatTAC(const TACInstr* i, char* buf, size_t n) {
         case TAC_CALL:       snprintf(buf, n, "%s = CALL %s, %s",
                                       i->result, i->arg1, i->arg2); break;
         case TAC_RETURN:     if (i->arg1) snprintf(buf, n, "RETURN %s", i->arg1);
-                             else         snprintf(buf, n, "RETURN"); break;
+                             else         snprintf(buf, n, "RETURN");
+                             break;
         case TAC_LABEL:      snprintf(buf, n, "%s:", i->result); break;
         case TAC_GOTO:       snprintf(buf, n, "GOTO %s", i->arg1); break;
         case TAC_IF_FALSE:   snprintf(buf, n, "IF_FALSE %s GOTO %s", i->arg1, i->arg2); break;
@@ -542,6 +546,7 @@ static char* foldConstants(TACOp op, const char* a1, const char* a2, int* folded
 /* Does `name` get read anywhere at or after instruction `from`?
  * A conservative liveness test: it stops being conservative only for
  * compiler temporaries, which is exactly where dead code piles up. */
+__attribute__((unused))   /* kept for the dead-store pass added in later topics */
 static int isReadLater(TACInstr* from, const char* name) {
     for (TACInstr* c = from; c; c = c->next) {
         if (c->arg1 && strcmp(c->arg1, name) == 0) return 1;
@@ -562,6 +567,142 @@ static TACList copyList(const TACList* src) {
         else { d.tail->next = n; d.tail = n; }
     }
     return d;
+}
+
+/* -------------------------------------------------------------------------
+ * PROPAGATION HELPER
+ * Replace an operand by what the fact table says it holds:
+ *   1. a CONSTANT   (x = 5 earlier)  ->  constant propagation
+ *   2. a COPY       (x = y earlier)  ->  copy propagation
+ * Constants win because they open the door to folding.
+ * KNOWN LIMITATION: the starter language has no input, so every variable
+ * holds a compile-time constant and copy propagation almost never fires —
+ * constant propagation gets there first.  It earns its keep once function
+ * parameters arrive in Topic 3.  The copy fact is
+ * invalidated by dropFactsAbout() the moment EITHER x or y is reassigned,
+ * which is what keeps this transformation safe.
+ * -----------------------------------------------------------------------*/
+static void propagateOperand(char** operand) {
+    if (!*operand || isConstantNumber(*operand)) return;
+    const char* k = lookupFact(*operand, 1);
+    if (k) {
+        *operand = strdup(k);
+        optStats.constProp++; changesThisPass++;
+        return;
+    }
+    k = lookupFact(*operand, 0);
+    if (k && strcmp(k, *operand) != 0) {
+        *operand = strdup(k);
+        optStats.copyProp++; changesThisPass++;
+    }
+}
+
+/* After  result = arg1  record what `result` now holds.  A self-copy
+ * (x = x) teaches nothing and is not recorded. */
+static void recordAssignFact(TACInstr* n) {
+    if (isConstantNumber(n->arg1))
+        recordFact(n->result, n->arg1, 1);          /* constant fact */
+    else if (n->arg1 && strcmp(n->arg1, n->result) != 0)
+        recordFact(n->result, n->arg1, 0);          /* copy fact     */
+    else
+        dropFactsAbout(n->result);
+}
+
+/* -------------------------------------------------------------------------
+ * ALGEBRAIC IDENTITIES
+ * Returns the operand the whole expression reduces to, or NULL when no
+ * identity applies.  Only one operand needs to be a literal.
+ * -----------------------------------------------------------------------*/
+static const char* algebraicIdentity(TACOp op, const char* a, const char* b) {
+    if (!a || !b) return NULL;
+    int aZero = isConstantNumber(a) && atol(a) == 0;
+    int bZero = isConstantNumber(b) && atol(b) == 0;
+    int aOne  = isConstantNumber(a) && atol(a) == 1;
+    int bOne  = isConstantNumber(b) && atol(b) == 1;
+    /* Two literals are folding's job, not ours (keeps the stats honest). */
+    if (isConstantNumber(a) && isConstantNumber(b)) return NULL;
+    switch (op) {
+        case TAC_ADD:
+            if (bZero) return a;
+            if (aZero) return b;
+            break;
+        case TAC_SUB:
+            if (bZero) return a;
+            break;
+        case TAC_MUL:
+            if (bOne)  return a;
+            if (aOne)  return b;
+            if (aZero || bZero) return "0";
+            break;
+        case TAC_DIV:
+            if (bOne)  return a;
+            break;
+        default: break;
+    }
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------
+ * CONTROL-FLOW OPTIMIZATION  (runs at the end of every pass)
+ *   • Branch simplification
+ *        IF_FALSE <const> GOTO L   ->  GOTO L   (const == 0)  or removed
+ *        IF_TRUE  <const> GOTO L   ->  GOTO L   (const != 0)  or removed
+ *        GOTO L  immediately followed by  L:   ->  removed (jump to next)
+ *   • Unreachable code removal
+ *        anything after an unconditional GOTO or RETURN, up to the next
+ *        LABEL (the only way control can get back in) or FUNC_END.
+ * The starter language has no if/while yet, so on Topic 2 programs these
+ * usually find nothing — but the opportunity is checked on every compile,
+ * and Topic 4 (control flow) gets them for free.
+ * -----------------------------------------------------------------------*/
+static void flowOptimize(TACList* out) {
+    TACInstr* prev = NULL;
+    TACInstr* cur  = out->head;
+    while (cur) {
+        int remove = 0;
+
+        /* constant-condition branches */
+        if ((cur->op == TAC_IF_FALSE || cur->op == TAC_IF_TRUE) &&
+            isConstantNumber(cur->arg1)) {
+            int cond  = atol(cur->arg1) != 0;
+            int taken = (cur->op == TAC_IF_TRUE) ? cond : !cond;
+            if (taken) {                      /* always jumps -> plain GOTO */
+                cur->op   = TAC_GOTO;
+                cur->arg1 = cur->arg2;
+                cur->arg2 = NULL;
+            } else {
+                remove = 1;                   /* never jumps -> delete      */
+            }
+            optStats.branch++; changesThisPass++;
+        }
+
+        /* GOTO to the very next instruction */
+        if (!remove && cur->op == TAC_GOTO && cur->next &&
+            cur->next->op == TAC_LABEL && cur->next->result && cur->arg1 &&
+            strcmp(cur->next->result, cur->arg1) == 0) {
+            remove = 1;
+            optStats.branch++; changesThisPass++;
+        }
+
+        if (remove) {
+            cur = cur->next;
+            if (prev) prev->next = cur; else out->head = cur;
+            continue;
+        }
+
+        /* unreachable code after an unconditional transfer of control */
+        if (cur->op == TAC_GOTO || cur->op == TAC_RETURN) {
+            while (cur->next && cur->next->op != TAC_LABEL &&
+                   cur->next->op != TAC_FUNC_END &&
+                   cur->next->op != TAC_FUNC_BEGIN) {
+                cur->next = cur->next->next;
+                optStats.unreachable++; changesThisPass++;
+            }
+        }
+        prev = cur;
+        cur  = cur->next;
+    }
+    out->tail = prev;
 }
 
 /* -------------------------------------------------------------------------
@@ -617,17 +758,35 @@ static TACList optimizePass(TACList* in) {
             case TAC_ADD: case TAC_SUB: case TAC_MUL: case TAC_DIV:
             case TAC_LT:  case TAC_GT:  case TAC_LE:  case TAC_GE:
             case TAC_EQ:  case TAC_NE:  case TAC_AND: case TAC_OR: {
-                /* CONSTANT PROPAGATION into both operands */
-                const char* k;
-                if (!isConstantNumber(n->arg1) && (k = lookupFact(n->arg1, 1))) {
-                    n->arg1 = strdup(k);
-                    optStats.constProp++; changesThisPass++;
+                /* ALGEBRAIC SIMPLIFICATION (identities that need only ONE
+                 * literal operand, so folding alone would miss them):
+                 *     x + 0, 0 + x, x - 0, x * 1, 1 * x, x / 1   ->  x
+                 *     x * 0, 0 * x                              ->  0
+                 * Tried FIRST, on the operands exactly as written, and then
+                 * once more after propagation has substituted constants. */
+                const char* simplified = algebraicIdentity(n->op, n->arg1, n->arg2);
+
+                /* CONSTANT / COPY PROPAGATION into both operands.
+                 * propagateOperand() first tries a known constant
+                 * (x = 5  ->  use 5) and then a known copy (x = y  ->  use y). */
+                if (!simplified) {
+                    propagateOperand(&n->arg1);
+                    propagateOperand(&n->arg2);
+                    simplified = algebraicIdentity(n->op, n->arg1, n->arg2);
                 }
-                if (!isConstantNumber(n->arg2) && (k = lookupFact(n->arg2, 1))) {
-                    n->arg2 = strdup(k);
-                    optStats.constProp++; changesThisPass++;
+
+                if (simplified) {
+                    /* the instruction becomes a plain copy  result = operand */
+                    n->op   = TAC_ASSIGN;
+                    n->arg1 = strdup(simplified);
+                    n->arg2 = NULL;
+                    optStats.algebraic++; changesThisPass++;
+                    propagateOperand(&n->arg1);
+                    recordAssignFact(n);
+                    break;
                 }
-                /* CONSTANT FOLDING */
+
+                /* CONSTANT FOLDING: both operands are literals */
                 int folded;
                 char* r = foldConstants(n->op, n->arg1, n->arg2, &folded);
                 if (folded) {
@@ -641,27 +800,18 @@ static TACList optimizePass(TACList* in) {
                 }
                 break;
             }
- 
-            case TAC_ASSIGN: {
-                const char* k;
-                if (!isConstantNumber(n->arg1) && (k = lookupFact(n->arg1, 1))) {
-                    n->arg1 = strdup(k);
-                    optStats.constProp++; changesThisPass++;
-                }
-                if (isConstantNumber(n->arg1)) recordFact(n->result, n->arg1, 1);
-                else                           dropFactsAbout(n->result);
+
+            case TAC_ASSIGN:
+                /* x = y : substitute what we know about y, then remember
+                 * what x now holds (a constant or a copy of another name). */
+                propagateOperand(&n->arg1);
+                recordAssignFact(n);
                 break;
-            }
- 
+
             case TAC_PRINT:
-            case TAC_RETURN: {
-                const char* k;
-                if (n->arg1 && !isConstantNumber(n->arg1) && (k = lookupFact(n->arg1, 1))) {
-                    n->arg1 = strdup(k);
-                    optStats.constProp++; changesThisPass++;
-                }
+            case TAC_RETURN:
+                if (n->arg1) propagateOperand(&n->arg1);
                 break;
-            }
  
             case TAC_CALL:
                 if (n->result) dropFactsAbout(n->result);
@@ -716,6 +866,9 @@ static TACList optimizePass(TACList* in) {
         }
     }
     out.tail = prev;
+
+    /* FLOW OPTIMIZATION: branch simplification + unreachable code */
+    flowOptimize(&out);
     return out;
 }
  

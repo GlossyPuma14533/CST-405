@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *   ^^^^^^^  this file
  *
+ *   RECEIVES : the source file, as raw characters (yyin)
+ *   PRODUCES : a stream of tokens, one per yylex() call, with yylval/yylloc filled in
+ *
  * WHAT IS NEW IN TOPIC 2
  *   • The starter token set: `int`, `print`, identifiers, numbers,
  *   • `+`, `=`, `;`, `(`, `)`, and both comment forms
@@ -44,6 +47,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "parser.tab.h"  /* Token definitions from Bison */
+#include "trace.h"       /* trace(): silent under -q */
+
+/* Number of lexical errors seen.  main() checks it after parsing: a bad
+ * character is SKIPPED so scanning can continue and report every error in
+ * one run, which means the parser may still succeed — so the compile must be
+ * failed explicitly here, or a program containing '@' would compile. */
+int lexErrorCount = 0;
+
+/* TOKEN STREAM DISPLAY
+ * Every token is echoed (line, token kind, lexeme) as it is handed to the
+ * parser, so Phase 1's output can be inspected on its own.  Tokens appear in
+ * the order bison REQUESTS them — one token of lookahead at a time. */
+/* Give the parser each token's line number for its @n locations. */
+#define YY_USER_ACTION  yylloc.first_line = yylloc.last_line = yylineno;
+
+#define TOKEN(kind, name) \
+    do { trace("    line %-3d %-6s '%s'\n", yylineno, name, yytext); return kind; } while (0)
 %}
 
 /* Flex options to suppress warnings for unused functions */
@@ -53,35 +73,40 @@
 
 %%
 
-"int"           { return INT; }
-"print"         { return PRINT; }
+"int"           { TOKEN(INT,   "INT"); }
+"print"         { TOKEN(PRINT, "PRINT"); }
 
 [a-zA-Z_][a-zA-Z0-9_]* {
-    yylval.str = strdup(yytext);
-    return ID;
+    yylval.str = strdup(yytext);   /* the parser rule that receives it frees it */
+    TOKEN(ID, "ID");
 }
 
 [0-9]+          {
+    /* KNOWN LIMITATION: atoi() does not detect overflow, so a literal
+     * larger than 2147483647 silently wraps instead of being reported. */
     yylval.num = atoi(yytext);
-    return NUM;
+    TOKEN(NUM, "NUM");
 }
 
-
-"+"             { return '+'; }
-
-
-"="             { return '='; }
-
-";"             { return ';'; }
-"("             { return '('; }
-")"             { return ')'; }
+"+"             { TOKEN('+', "'+'"); }
+"="             { TOKEN('=', "'='"); }
+";"             { TOKEN(';', "';'"); }
+"("             { TOKEN('(', "'('"); }
+")"             { TOKEN(')', "')'"); }
 
 "//".*          { /* Skip single-line comments */ }
 "/*"([^*]|\*+[^*/])*\*+"/"  { /* Skip multi-line comments */ }
 
-[ \t\n]         { }
+[ \t\r\n]       { /* whitespace (\r too, so Windows line endings scan cleanly) */ }
 
-.               { printf("Lexical Error: Unknown character '%c'\n", *yytext); }
+.               {
+                    /* Any character no rule above accepts.  Report it with its
+                     * line, skip it, and keep scanning so every lexical error
+                     * in the file is reported in one run. */
+                    fprintf(stderr, "Lexical Error at line %d: unknown character '%c'\n",
+                            yylineno, *yytext);
+                    lexErrorCount++;
+                }
 
 %%
 

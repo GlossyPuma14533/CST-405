@@ -5,6 +5,9 @@
  * THE PIPELINE, AND WHERE THIS FILE SITS IN IT
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *
+ *   RECEIVES : the command line: source file, output .s, optional -q
+ *   PRODUCES : runs phases 1-6 in order; exit code 0 = success, 1 = any error
+ *
  * WHAT IS NEW IN TOPIC 2
  *   • The six-phase driver every later milestone reuses unchanged
  *
@@ -54,6 +57,8 @@
 #include "tac.h"
 
 extern int yyparse(void);
+extern void flushSyntaxError(void);   /* parser.y: print any unclaimed syntax error */
+extern int  lexErrorCount;             /* scanner.l: bad characters seen */
 extern FILE* yyin;
 extern ASTNode* root;
 
@@ -127,11 +132,13 @@ int main(int argc, char* argv[]) {
      * parser.y build the AST as the reductions happen, so by the time
      * yyparse() returns 0 the tree is already standing. */
     beginPhase(0);
+    if (!quiet) printf("Token stream (as the parser requests each token):\n");
     int parseFailed = yyparse();
     endPhase(0);
 
-    if (parseFailed != 0 || root == NULL) {
-        printf("\n✗ Compilation stopped: the program is not syntactically valid.\n");
+    if (parseFailed != 0 || root == NULL || lexErrorCount > 0) {
+        flushSyntaxError();
+        printf("\n✗ Compilation stopped: the program is not lexically/syntactically valid.\n");
         printf("  Fix the errors listed above and compile again.\n");
         fclose(yyin);
         return 1;

@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *                                                  ^^^^^^^  this file
  *
+ *   RECEIVES : the OPTIMIZED TAC list from tac.c
+ *   PRODUCES : a MIPS .s file that runs in SPIM / QtSPIM
+ *
  * UNCHANGED SINCE TOPIC 1 — the interfaces held, which is the point
  *
  * WHAT COMES NEXT

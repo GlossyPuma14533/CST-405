@@ -5,6 +5,9 @@
  * THE PIPELINE, AND WHERE THIS FILE SITS IN IT
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *
+ *   RECEIVES : declarations (from the semantic pass and the code generator)
+ *   PRODUCES : name -> storage location (frame offset or global label) lookups
+ *
  * WHAT IS NEW IN TOPIC 2
  *   • Four bytes per int, handed out in declaration order
  *

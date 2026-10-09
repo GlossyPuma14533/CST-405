@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *                        ^^^  this file
  *
+ *   RECEIVES : constructor calls from the grammar actions in parser.y
+ *   PRODUCES : the ASTNode type every later phase walks
+ *
  * WHAT IS NEW IN TOPIC 2
  *   • The node kinds the starter language needs: NUM, VAR, BINOP,
  *   • DECL, ASSIGN, PRINT, STMT_LIST

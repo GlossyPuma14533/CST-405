@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *                               ^^^^^^^^  this file
  *
+ *   RECEIVES : the AST from the parser
+ *   PRODUCES : a verdict: 0 = meaningful program, -1 = errors reported (with lines)
+ *
  * UNCHANGED SINCE TOPIC 1 — the interfaces held, which is the point
  *
  * WHAT COMES NEXT

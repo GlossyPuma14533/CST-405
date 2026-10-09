@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *                               ^^^^^^^^  this file
  *
+ *   RECEIVES : the AST from the parser
+ *   PRODUCES : a verdict: 0 = meaningful program, -1 = errors reported (with lines)
+ *
  * WHAT IS NEW IN TOPIC 2
  *   • Undeclared variables and duplicate declarations, reported with line numbers
  *
@@ -327,6 +330,12 @@ int performSemanticAnalysis(ASTNode* root) {
     /* The starter language has no functions, so one walk over the statement
      * list is the whole analysis.  Topic 3 replaces this with two passes. */
     checkStmtList(root);
+
+    /* Show the scope again AFTER the walk: every declaration the checker
+     * accepted is now in it — this is the symbol table the semantic
+     * analyzer built while verifying the program. */
+    trace("Symbol table after semantic analysis:\n");
+    printSemanticScopes();
  
     /* Exit global scope */
     exitScope();

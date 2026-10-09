@@ -1,0 +1,10 @@
+# Build artefacts — never commit these (assignment: Repository rules)
+*.o
+compiler/minicompiler
+compiler/lex.yy.c
+compiler/parser.tab.c
+compiler/parser.tab.h
+compiler/parser.output
+*.s
+*.tac
+*.orig

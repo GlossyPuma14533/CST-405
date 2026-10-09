@@ -6,6 +6,9 @@
  *   scanner -> parser -> ast -> semantic -> tac -> codegen
  *                                           ^^^  this file
  *
+ *   RECEIVES : the semantically checked AST
+ *   PRODUCES : unoptimized and optimized TAC lists for codegen.c
+ *
  * UNCHANGED SINCE TOPIC 1 — the interfaces held, which is the point
  *
  * WHAT COMES NEXT
