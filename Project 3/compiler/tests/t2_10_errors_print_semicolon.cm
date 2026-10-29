@@ -1,0 +1,8 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * Missing ';' after a PRINT statement (the third statement form; t2_05
+ * covers assignment and t2_09 covers declaration).
+ * Expected: "Syntax Error at line 7: missing ';' after print statement". */
+int x;
+x = 4;
+print(x)
+print(x);

@@ -1,0 +1,22 @@
+/* Expected output: 120  120  24
+ * fact(5) = 120 — the README's calling-convention check.
+ * This language has no `if` until Topic 4, so a recursion that STOPS cannot
+ * be written yet.  Instead factorial is unrolled into a chain of five real
+ * calls: fact -> f5 -> f4 -> f3 -> f2 -> f1.  Every level builds its own
+ * activation record, saves its own $ra, and multiplies AFTER its callee
+ * returns — so if $ra or the frame were wrong, the program would crash or
+ * print the wrong number.  Run without -q to watch each frame being laid out. */
+int f1(int n) { return n; }
+int f2(int n) { return n * f1(n - 1); }
+int f3(int n) { return n * f2(n - 1); }
+int f4(int n) { return n * f3(n - 1); }
+int f5(int n) { return n * f4(n - 1); }
+int fact(int n) { return f5(n); }
+int main() {
+    int r;
+    r = fact(5);
+    print(r);                 /* 120 */
+    print(f5(5));             /* 120 — same chain, called directly */
+    print(f4(4));             /* 24  — enter the chain one level lower */
+    return 0;
+}

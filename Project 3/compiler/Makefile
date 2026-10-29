@@ -3,6 +3,8 @@
 # ----------------------------------------------------------------------------
 #   make            build ./minicompiler
 #   make test       compile and run every program in tests/ under SPIM
+#   make check      same, but compare against each test's expected output
+#                   and print PASS/FAIL (see run_tests.sh)
 #   make clean      remove everything that `make` produced
 #
 # The two generated files are worth knowing about:
@@ -59,11 +61,17 @@ test: $(TARGET)
 	@for f in tests/*.cm; do \
 	   echo "── $$f ─────────────────────────────────────────"; \
 	   ./$(TARGET) $$f $${f%.cm}.s -q > /dev/null || { echo "  COMPILE FAILED"; continue; }; \
-	   spim -file $${f%.cm}.s 2>/dev/null | grep -v '^Loaded'; \
+	   spim -file $${f%.cm}.s 2>/dev/null \
+	     | grep -v -E '^(SPIM Version|Copyright|All Rights|See the file|Loaded:)'; \
 	done
+
+# Self-checking version of `make test`: PASS/FAIL per test, non-zero exit
+# status if anything fails.
+check: $(TARGET)
+	@tr -d '\r' < run_tests.sh | bash   # tr: tolerate CRLF checkouts on Windows
 
 clean:
 	rm -f $(TARGET) $(OBJS) lex.yy.c parser.tab.c parser.tab.h parser.output
 	rm -f tests/*.s tests/*.tac *.s *.tac
 
-.PHONY: all clean test
+.PHONY: all clean test check

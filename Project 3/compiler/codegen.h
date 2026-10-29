@@ -11,10 +11,8 @@
  * WHAT COMES NEXT
  *   Topic 4 adds loops (while, for, break) and the label/jump machinery they need.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 3)  is yours to write.
- *   Everything else already works — it is the Topic 2 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Interface unchanged; MAX_ARGS (4) is enforced by semantic.c and codegen.c.
  * ========================================================================= */
 
 #ifndef CODEGEN_H

@@ -13,10 +13,9 @@
  * WHAT COMES NEXT
  *   Topic 4 adds loops (while, for, break) and the label/jump machinery they need.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 3)  is yours to write.
- *   Everything else already works — it is the Topic 2 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Every TODO (Topic 3) in this file has been implemented.  Lexical errors
+ *   are now counted (lexErrors) so main.c can fail the compile.
  * ========================================================================= */
 
 %{
@@ -43,6 +42,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "parser.tab.h"  /* Token definitions from Bison */
+
+/* Count of lexical errors.  main.c fails the compile when this is non-zero,
+ * so a stray character is a real error and not just a printed warning. */
+int lexErrors = 0;
+
+/* Record each token's line in yylloc so the parser's @n locations work.
+ * Error productions use them to report a missing ';' on the line that is
+ * actually missing it, not the line where the parser noticed. */
+#define YY_USER_ACTION  yylloc.first_line = yylloc.last_line = yylineno;
 %}
 
 /* Flex options to suppress warnings for unused functions */
@@ -54,10 +62,10 @@
 
 "int"           { return INT; }
 "print"         { return PRINT; }
-    /* --------------------------------------------------------------
-     * TODO (Topic 3)
-     * Return RETURN for the `return` keyword.
-     * -------------------------------------------------------------- */
+"return"        { return RETURN; }   /* Topic 3: functions return values.
+                                      * Sits ABOVE the ID rule: same length
+                                      * match, so first-match makes it a
+                                      * keyword rather than an identifier. */
 
 [a-zA-Z_][a-zA-Z0-9_]* {
     yylval.str = strdup(yytext);
@@ -71,12 +79,12 @@
 
 
 "+"             { return '+'; }
-    /* --------------------------------------------------------------
-     * TODO (Topic 3)
-     * The rest of arithmetic: return '-', '*' and '/'.
-     * Careful: the '/' rule must not swallow the start of a comment.
-     * Longest match settles it — check that it really does.
-     * -------------------------------------------------------------- */
+"-"             { return '-'; }   /* binary minus AND unary minus: the
+                                   * parser tells them apart, not us     */
+"*"             { return '*'; }
+"/"             { return '/'; }   /* Never eats a comment: "//" and "/ *"
+                                   * match 2+ characters, so LONGEST MATCH
+                                   * picks the comment rules over this one */
 
 
 "="             { return '='; }
@@ -84,17 +92,22 @@
 ";"             { return ';'; }
 "("             { return '('; }
 ")"             { return ')'; }
-    /* --------------------------------------------------------------
-     * TODO (Topic 3)
-     * Braces for blocks, brackets for arrays, comma for parameter lists.
-     * -------------------------------------------------------------- */
+"{"             { return '{'; }   /* blocks and function bodies          */
+"}"             { return '}'; }
+"["             { return '['; }   /* array declaration and indexing      */
+"]"             { return ']'; }
+","             { return ','; }   /* parameter and argument lists        */
 
 "//".*          { /* Skip single-line comments */ }
 "/*"([^*]|\*+[^*/])*\*+"/"  { /* Skip multi-line comments */ }
 
-[ \t\n]         { }
+[ \t\r\n]       { /* whitespace (\r too, for files saved on Windows) */ }
 
-.               { printf("Lexical Error: Unknown character '%c'\n", *yytext); }
+.               {
+                    fprintf(stderr, "Lexical Error at line %d: unknown character '%c'\n",
+                            yylineno, *yytext);
+                    lexErrors++;   /* keep scanning so every bad char is reported */
+                }
 
 %%
 

@@ -11,10 +11,9 @@
  * WHAT COMES NEXT
  *   Topic 4 adds loops (while, for, break) and the label/jump machinery they need.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 3)  is yours to write.
- *   Everything else already works — it is the Topic 2 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Topic 3 changes here: lexical errors now fail the compile, and syntax
+ *   errors are reported once, as precisely as possible (deferred yyerror).
  * ========================================================================= */
 
 /* ============================================================================
@@ -55,6 +54,8 @@
 extern int yyparse(void);
 extern FILE* yyin;
 extern ASTNode* root;
+extern int lexErrors;                /* scanner.l: count of bad characters  */
+extern void flushSyntaxError(void);  /* parser.y: print a deferred message  */
 
 int quiet = 0;   /* Set by -q; consulted by the banner helpers below */
 
@@ -129,6 +130,15 @@ int main(int argc, char* argv[]) {
     int parseFailed = yyparse();
     endPhase(0);
 
+    if (parseFailed != 0) flushSyntaxError();
+    if (lexErrors > 0 && parseFailed == 0) {
+        /* The scanner skipped the bad characters so the parse may have
+         * succeeded, but the source is still not a legal program. */
+        printf("\n✗ Compilation stopped: %d lexical error%s (see above).\n",
+               lexErrors, lexErrors == 1 ? "" : "s");
+        fclose(yyin);
+        return 1;
+    }
     if (parseFailed != 0 || root == NULL) {
         printf("\n✗ Compilation stopped: the program is not syntactically valid.\n");
         printf("  Fix the errors listed above and compile again.\n");

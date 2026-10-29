@@ -1,0 +1,9 @@
+# Build outputs (regenerate with `make`)
+minicompiler
+*.o
+lex.yy.c
+parser.tab.c
+parser.tab.h
+parser.output
+*.s
+*.tac

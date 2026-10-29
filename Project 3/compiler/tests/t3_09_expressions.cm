@@ -1,0 +1,25 @@
+/* Expected output: 21  -5  2  12  -7  -22
+ * Arithmetic on VARIABLES (nothing here can be constant-folded away, because
+ * the values arrive as parameters), plus an expression big enough to use
+ * more than ten temporaries at once — that forces the register allocator to
+ * spill and reload.  Precedence and associativity are checked again here
+ * with run-time values. */
+int calc(int a, int b, int c, int d) {
+    return a * b + c * d - (a - b) * (c - d) + a / b;
+}
+int neg(int a) { return -a; }
+int mix(int a, int b) { return (a + b) * (a - b) / (b - a + a + 1); }
+int big(int a) {
+    return (a + 1) * (a + 2) + (a + 3) * (a + 4) + (a + 5) * (a + 6)
+         + (a + 7) * (a + 8) - (a + 9) * (a + 10) + (a + 11) * (a + 12)
+         - (a + 13) * (a + 14) + (a + 15) - (a + 16) - (a + 17) * (a - 1);
+}
+int main() {
+    print(calc(7, 3, 5, 2));        /* 21 + 10 - 4*3 + 7/3 = 21 */
+    print(neg(5));                  /* -5 */
+    print(17 / 3 - 3);              /* 2 */
+    print(mix(10, 5));              /* 15*5/6 = 12 (truncates) */
+    print(-(3 + 4));                /* -7 */
+    print(big(2));                  /* -22 — needs > 10 registers */
+    return 0;
+}

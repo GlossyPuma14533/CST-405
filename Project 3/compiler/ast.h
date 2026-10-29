@@ -13,10 +13,9 @@
  * WHAT COMES NEXT
  *   Topic 4 adds loops (while, for, break) and the label/jump machinery they need.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 3)  is yours to write.
- *   Everything else already works — it is the Topic 2 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Every TODO (Topic 3) in this file has been implemented: nine new node
+ *   kinds, their union members, and their constructor prototypes.
  * ========================================================================= */
 
 #ifndef AST_H
@@ -37,15 +36,17 @@ typedef enum {
     NODE_ASSIGN,      /* Assignment statement (e.g., x = 10) */
     NODE_PRINT,       /* Print statement (e.g., print(x)) */
     NODE_STMT_LIST,   /* List of statements (program structure) */
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * The node kinds functions need: FUNC_DEF, PARAM, PARAM_LIST, FUNC_CALL,
- * ARG_LIST, RETURN.
- * -------------------------------------------------------------- */
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * And the node kinds blocks and arrays need: BLOCK, ARRAY_DECL, ARRAY_INDEX.
- * -------------------------------------------------------------- */
+    /* ---- Topic 3: functions ---------------------------------------------- */
+    NODE_FUNC_DEF,    /* Function definition: int f(params) { body }        */
+    NODE_PARAM,       /* One SCALAR parameter: int a                        */
+    NODE_PARAM_LIST,  /* Linked list of parameters, in source order         */
+    NODE_FUNC_CALL,   /* Call used as a value or as a statement: f(1, x)    */
+    NODE_ARG_LIST,    /* Linked list of argument expressions, source order  */
+    NODE_RETURN,      /* return expr;  or  return;                          */
+    /* ---- Topic 3: blocks and arrays -------------------------------------- */
+    NODE_BLOCK,       /* { stmt_list } — opens a new scope                  */
+    NODE_ARRAY_DECL,  /* int a[10];  or the array PARAMETER  int a[]        */
+    NODE_ARRAY_INDEX  /* a[expr] — an array element used as a value/target  */
 } NodeType;
 
 /* AST NODE STRUCTURE
@@ -82,6 +83,8 @@ typedef struct ASTNode {
         struct {
             char* var;                  /* Variable being assigned to (NULL for array) */
             struct ASTNode* value;      /* Expression being assigned */
+            struct ASTNode* arrayLHS;   /* Topic 3: NODE_ARRAY_INDEX target of
+                                         * arr[i] = expr;  NULL for x = expr; */
         } assign;
         
         /* Print expression (NODE_PRINT) */
@@ -93,24 +96,68 @@ typedef struct ASTNode {
             struct ASTNode* next;       /* Rest of the list */
         } stmtlist;
 
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * Union members for the function-related node kinds.  Each records
- * exactly what later phases will ask for and nothing more:
- *   func_def  : name, params, body
- *   param     : name          param_list : param, next
- *   func_call : name, args    arg_list   : expr, next
- *   ret       : expr (NULL for a bare `return;`)
- * -------------------------------------------------------------- */
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * Union members for blocks and arrays:
- *   block       : stmt_list
- *   array_decl  : name, size, isParam
- *   array_index : name, index
- * isParam separates `int a[10];` (reserve 40 bytes of storage) from
- * `int a[]` as a parameter (reserve 4 bytes for an address).
- * -------------------------------------------------------------- */
+        /* ---- Topic 3: function-related nodes ----------------------------
+         * Each records exactly what later phases ask for and nothing more. */
+
+        /* Function definition (NODE_FUNC_DEF) */
+        struct {
+            char* name;                 /* Function name                      */
+            struct ASTNode* params;     /* NODE_PARAM_LIST, or NULL for f()   */
+            struct ASTNode* body;       /* NODE_BLOCK                         */
+        } func_def;
+
+        /* Scalar parameter (NODE_PARAM).  Array parameters reuse
+         * NODE_ARRAY_DECL with isParam = 1. */
+        struct {
+            char* name;
+        } param;
+
+        /* Parameter list (NODE_PARAM_LIST) — right-linked, source order */
+        struct {
+            struct ASTNode* param;      /* NODE_PARAM or NODE_ARRAY_DECL      */
+            struct ASTNode* next;       /* Rest of the list, or NULL          */
+        } param_list;
+
+        /* Function call (NODE_FUNC_CALL) */
+        struct {
+            char* name;                 /* Callee name                        */
+            struct ASTNode* args;       /* NODE_ARG_LIST, or NULL for f()     */
+        } func_call;
+
+        /* Argument list (NODE_ARG_LIST) — right-linked, source order */
+        struct {
+            struct ASTNode* expr;       /* This argument's expression         */
+            struct ASTNode* next;       /* Rest of the list, or NULL          */
+        } arg_list;
+
+        /* Return statement (NODE_RETURN) */
+        struct {
+            struct ASTNode* expr;       /* NULL for a bare `return;`          */
+        } ret;
+
+        /* ---- Topic 3: blocks and arrays -------------------------------- */
+
+        /* Block (NODE_BLOCK) */
+        struct {
+            struct ASTNode* stmt_list;  /* NULL for an empty block {}         */
+        } block;
+
+        /* Array declaration or array parameter (NODE_ARRAY_DECL).
+         * isParam separates `int a[10];` (reserve 40 bytes of storage) from
+         * `int a[]` as a parameter (reserve 4 bytes for an address). */
+        struct {
+            char* name;
+            int   size;                 /* Element count; 0 for a parameter   */
+            int   isParam;              /* 1 = `int a[]` parameter            */
+        } array_decl;
+
+        /* Array element (NODE_ARRAY_INDEX).  The array is a NAME, not an
+         * expression node: this language has no pointers, so the only thing
+         * that can be indexed is a declared array. */
+        struct {
+            char* name;
+            struct ASTNode* index;      /* Index expression                   */
+        } array_index;
     } data;
 } ASTNode;
 
@@ -127,22 +174,24 @@ ASTNode* createPrint(ASTNode* expr);                            /* Create print 
 ASTNode* createStmtList(ASTNode* stmt1, ASTNode* stmt2);        /* Create statement list */
 
 /* Function-related nodes */
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * Declare the constructors for the function-related nodes.
- * -------------------------------------------------------------- */
+ASTNode* createFuncDef(char* name, ASTNode* params, ASTNode* body);
+ASTNode* createParam(char* name);                               /* int a        */
+ASTNode* createParamList(ASTNode* param, ASTNode* next);
+ASTNode* appendParam(ASTNode* list, ASTNode* param);            /* keep source order */
+ASTNode* createFuncCall(char* name, ASTNode* args);
+ASTNode* createArgList(ASTNode* expr, ASTNode* next);
+ASTNode* appendArg(ASTNode* list, ASTNode* expr);               /* keep source order */
+ASTNode* createReturn(ASTNode* expr);                           /* expr may be NULL */
 
 /* Control flow nodes */
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * Declare createBlock.
- * -------------------------------------------------------------- */
+ASTNode* createBlock(ASTNode* stmtList);                        /* stmtList may be NULL */
 
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * Declare the array constructors.  Note createArrayParam is separate from
- * createArrayDecl: a parameter has no size and is a reference, not storage.
- * -------------------------------------------------------------- */
+/* Array nodes.  createArrayParam is separate from createArrayDecl: a
+ * parameter has no size and is a reference, not storage. */
+ASTNode* createArrayDecl(char* name, int size);                 /* int a[10];   */
+ASTNode* createArrayParam(char* name);                          /* int a[]      */
+ASTNode* createArrayIndex(char* name, ASTNode* index);          /* a[i]         */
+ASTNode* createArrayAssign(ASTNode* target, ASTNode* value);    /* a[i] = expr; */
 
 /* Text form of a packed operator code (see createBinOp) */
 const char* opText(char op);

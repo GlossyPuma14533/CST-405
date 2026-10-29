@@ -1,0 +1,9 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * A LEXICAL error: '@' is not a character of the language, so the scanner
+ * rejects it before the parser ever sees a token.  The statement is
+ * otherwise valid, which proves the compile is failed by the SCANNER and not
+ * by a knock-on syntax error.
+ * Expected: "Lexical Error at line 9: unknown character '@'", exit code 1. */
+int x;
+x = 5;
+print(x); @

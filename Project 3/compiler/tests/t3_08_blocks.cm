@@ -1,0 +1,31 @@
+/* Expected output: 1  2  3  2  1  100  42
+ * Nested { } blocks open new scopes.  The same name `x` is declared at three
+ * depths; each declaration gets its OWN frame slot (tac.c renames the inner
+ * ones x__1, x__2 — look for "[SCOPE]" in the trace), so assigning the inner
+ * x never disturbs the outer one.  A local may also shadow a global. */
+int x;
+int peek() { return x; }                  /* always the GLOBAL x */
+int main() {
+    x = 42;
+    {
+        int x;
+        x = 1;
+        print(x);                         /* 1 */
+        {
+            int x;
+            x = 2;
+            print(x);                     /* 2 */
+            {
+                int x;
+                x = 3;
+                print(x);                 /* 3 */
+            }
+            print(x);                     /* 2 — back out one level */
+        }
+        print(x);                         /* 1 */
+        x = 100;
+        print(x);                         /* 100 */
+    }
+    print(peek());                        /* 42 — global untouched */
+    return 0;
+}

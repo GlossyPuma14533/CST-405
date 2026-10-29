@@ -1,0 +1,7 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * Arguments travel in $a0-$a3, so this compiler supports at most 4
+ * parameters.  A fifth is reported as a semantic error (line 6) instead of
+ * silently generating wrong code.  Expected: 1 semantic error, exit code 1. */
+int ok(int a, int b, int c, int d) { return a + b + c + d; }
+int tooMany(int a, int b, int c, int d, int e) { return a + e; }
+int main() { print(ok(1, 2, 3, 4)); return 0; }

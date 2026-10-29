@@ -14,10 +14,9 @@
  * WHAT COMES NEXT
  *   Topic 4 adds loops (while, for, break) and the label/jump machinery they need.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 3)  is yours to write.
- *   Everything else already works — it is the Topic 2 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Every TODO (Topic 3) in this file has been implemented.  Each finished
+ *   section is marked  DONE (Topic 3)  with a note on the design decision.
  * ========================================================================= */
 
 /* ============================================================================
@@ -46,10 +45,30 @@
 static FILE* out;                 /* The .s file being written              */
 RegisterAllocator regAlloc;       /* The $t0-$t9 cache                      */
 
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * Implement this part of the milestone.
- * -------------------------------------------------------------- */
+/* DONE (Topic 3): state the call machinery needs.
+ *
+ * ARGUMENT BUFFER.  TAC gives  ARG a ; ARG b ; t = CALL f, 2.  The ARGs are
+ * buffered by NAME and consumed by the CALL, which takes the last `count`
+ * of them.  Nothing is moved into $a0-$a3 until the CALL itself, so no
+ * other instruction can clobber an argument register in between.
+ *
+ * PINNED REGISTERS.  One TAC instruction may need several registers at once
+ * (two operands, a destination, an address).  A register handed out for the
+ * CURRENT instruction is pinned so the LRU allocator can never evict it to
+ * satisfy the next request of that same instruction.  (Without this, with
+ * all ten $t registers busy, `a = 5 + x` could hand the register holding 5
+ * to x — a bug that only shows up in register-hungry code.)
+ *
+ * PARAM COUNTER.  The k-th PARAM of a function arrives in $a<k>. */
+#define MAX_PENDING_ARGS 64
+static const char* argBuffer[MAX_PENDING_ARGS];
+static int argCount = 0;
+
+static int pinned[NUM_TEMP_REGS];
+static void unpinAll(void) { for (int i = 0; i < NUM_TEMP_REGS; i++) pinned[i] = 0; }
+
+static int paramIndex = 0;
+static int scratchSerial = 0;
 
 static int frameSize  = 0;        /* Size of the frame being generated       */
 static const char* currentFunc = NULL;
@@ -159,14 +178,19 @@ static int findVarReg(const char* name) {
  * to lose.  A real compiler would use liveness information here; LRU is a
  * good approximation and is easy to reason about in class. */
 static int selectVictimReg(void) {
-    int victim = 0, oldest = regAlloc.regs[0].lastUsed;
-    for (int i = 1; i < NUM_TEMP_REGS; i++) {
+    int victim = -1, oldest = 0;
+    for (int i = 0; i < NUM_TEMP_REGS; i++) {
+        if (pinned[i]) continue;               /* in use by THIS instruction */
         /* Values with no memory home are the cheapest to discard */
         if (!regAlloc.regs[i].hasHome && regAlloc.regs[i].inUse) return i;
-        if (regAlloc.regs[i].lastUsed < oldest) {
+        if (victim == -1 || regAlloc.regs[i].lastUsed < oldest) {
             oldest = regAlloc.regs[i].lastUsed;
             victim = i;
         }
+    }
+    if (victim == -1) {                        /* cannot happen: <= 5 pins */
+        fprintf(stderr, "codegen: every register is pinned\n");
+        exit(1);
     }
     return victim;
 }
@@ -185,7 +209,7 @@ static void spillReg(int r) {
  * primed with the value already in memory. */
 static int getReg(const char* name, int hasHome, int load) {
     int r = findVarReg(name);
-    if (r != -1) return r;                       /* Already cached          */
+    if (r != -1) { pinned[r] = 1; return r; }    /* Already cached          */
 
     for (r = 0; r < NUM_TEMP_REGS; r++)          /* A free register?        */
         if (!regAlloc.regs[r].inUse) break;
@@ -206,6 +230,7 @@ static int getReg(const char* name, int hasHome, int load) {
         emitLoadHome(r, name);
         regAlloc.loadCount++;
     }
+    pinned[r] = 1;                               /* safe for this instruction */
     return r;
 }
 
@@ -219,10 +244,15 @@ static int defReg(const char* name) {
     return r;
 }
 
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * Implement this part of the milestone.
- * -------------------------------------------------------------- */
+/* DONE (Topic 3): an anonymous register for address arithmetic.  It has no
+ * memory home, so evicting it later costs nothing; callers release it as
+ * soon as the address has been used. */
+static int scratchReg(void) {
+    char n[MAX_VAR_NAME];
+    snprintf(n, sizeof n, "#scratch%d", scratchSerial++);
+    return getReg(n, 0, 0);
+}
+
 static void releaseReg(int r) {
     if (r < 0) return;
     regAlloc.regs[r].inUse      = 0;
@@ -237,7 +267,7 @@ static int operandReg(const char* s) {
         char n[MAX_VAR_NAME];
         snprintf(n, sizeof n, "#k%s", s);
         int r = findVarReg(n);
-        if (r != -1) return r;
+        if (r != -1) { pinned[r] = 1; return r; }
         r = getReg(n, 0, 0);
         fprintf(out, "    li   $t%d, %s\n", r, s);
         return r;
@@ -255,6 +285,20 @@ static void flushRegisters(const char* why) {
     if (any) fprintf(out, "    # write back live values (%s)\n", why);
     for (int i = 0; i < NUM_TEMP_REGS; i++) {
         spillReg(i);
+        releaseReg(i);
+    }
+}
+
+/* Topic 3: leaving a function.  The frame is about to be popped, so writing
+ * dirty LOCALS and temporaries back to it would be wasted stores — only
+ * dirty GLOBALS have to reach memory.  Then forget everything. */
+static void flushForReturn(void) {
+    for (int i = 0; i < NUM_TEMP_REGS; i++) {
+        RegisterDescriptor* d = &regAlloc.regs[i];
+        if (d->inUse && d->isDirty && d->hasHome) {
+            Symbol* s = lookupSymbol(d->varName);
+            if (s && s->isGlobal) spillReg(i);   /* globals outlive the frame */
+        }
         releaseReg(i);
     }
 }
@@ -296,15 +340,52 @@ static void emitStoreHome(int reg, const char* name) {
     else             fprintf(out, "    sw   $t%d, %d($sp)        # %s\n", reg, s->offset, s->name);
 }
 
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * Array addressing.  Three cases, and telling them apart IS the lesson:
- *   global array      la   $t, g_name          address of a .data label
- *   local array       addi $t, $sp, offset     the elements are in the frame
- *   array parameter   lw   $t, offset($sp)     the slot holds someone
+/* ==========================================================================
+ * ARRAY ADDRESSING                                         DONE (Topic 3)
+ * --------------------------------------------------------------------------
+ * Three cases, and telling them apart IS the lesson:
+ *   global array      la   $r, g_name          address of a .data label
+ *   local array       addi $r, $sp, offset     the elements are in the frame
+ *   array parameter   lw   $r, offset($sp)     the slot holds someone
  *                                              ELSE'S base address
- * Then element address = base + index*4  (sll by 2, then add).
- * -------------------------------------------------------------- */
+ * `reg` is written as a register NAME ("$t3", "$a0") so the same helper can
+ * load an address straight into an argument register for a call.
+ * ========================================================================*/
+static void emitArrayBase(const char* reg, const char* name) {
+    Symbol* s = lookupSymbol(name);
+    if (!s || !s->isArray) {
+        fprintf(stderr, "codegen: '%s' is not an array (internal error in '%s')\n",
+                name, currentFunc ? currentFunc : "?");
+        exit(1);
+    }
+    if (s->isGlobal)
+        fprintf(out, "    la   %s, %s          # &%s[0] (global)\n", reg, dataLabel(s->name), s->name);
+    else if (s->isParamArray)
+        fprintf(out, "    lw   %s, %d($sp)        # &%s[0] (passed by reference)\n", reg, s->offset, s->name);
+    else
+        fprintf(out, "    addi %s, $sp, %d        # &%s[0] (in this frame)\n", reg, s->offset, s->name);
+}
+
+/* Element address = base + index*4  (sll by 2, then add).  A constant
+ * index is folded into a single addi.  Returns a SCRATCH register holding
+ * the address; the caller releases it after the lw/sw. */
+static int operandReg(const char* s);
+static int elementAddrReg(const char* arr, const char* index) {
+    int base = scratchReg();
+    char rb[8]; snprintf(rb, sizeof rb, "$t%d", base);
+    emitArrayBase(rb, arr);
+    if (isConstant(index)) {
+        long off = atol(index) * 4;
+        if (off) fprintf(out, "    addi $t%d, $t%d, %ld        # + %s*4\n", base, base, off, index);
+    } else {
+        int ir = operandReg(index);
+        int sc = scratchReg();
+        fprintf(out, "    sll  $t%d, $t%d, 2          # %s * 4 (bytes per int)\n", sc, ir, index);
+        fprintf(out, "    add  $t%d, $t%d, $t%d       # &%s[%s]\n", base, base, sc, arr, index);
+        releaseReg(sc);
+    }
+    return base;
+}
 /* ==========================================================================
  * PART 3 — FRAME LAYOUT
  * --------------------------------------------------------------------------
@@ -447,10 +528,14 @@ void generateMIPSFromTAC(const char* filename) {
         trace("\n  Activation record for '%s': %d bytes\n", currentFunc, frameSize);
         printSymTab();
         initRegAlloc();
+        unpinAll();
+        paramIndex = 0;
+        argCount   = 0;
 
         emitPrologue(currentFunc, frameSize);
 
         for (TACInstr* i = c->next; i && i->op != TAC_FUNC_END; i = i->next) {
+            unpinAll();     /* a new instruction: last one's registers may go */
             switch (i->op) {
 
             /* ---------- storage declarations: no code, just a comment ----- */
@@ -467,12 +552,23 @@ void generateMIPSFromTAC(const char* filename) {
             }
 
             /* ---------- parameters arrive in $a0-$a3 --------------------- */
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * Parameters arrive in $a0-$a3.  The prologue's job is to copy each one
- * into its frame slot, because $a0-$a3 will be needed again the moment
- * this function calls something else.
- * -------------------------------------------------------------- */
+            /* DONE (Topic 3): copy each incoming $a<k> into its frame slot,
+             * because $a0-$a3 are needed again the moment this function calls
+             * something else.  An array parameter's slot receives the
+             * caller's base ADDRESS — same instruction, different meaning. */
+            case TAC_PARAM: {
+                Symbol* s = lookupSymbol(i->result);
+                if (paramIndex >= MAX_ARGS) {
+                    fprintf(stderr, "codegen: '%s' has more than %d parameters\n",
+                            currentFunc, MAX_ARGS);
+                    exit(1);
+                }
+                fprintf(out, "    sw   $a%d, %d($sp)        # param %d: %s%s\n",
+                        paramIndex, s->offset, paramIndex + 1, i->result,
+                        s->isParamArray ? " (address)" : "");
+                paramIndex++;
+                break;
+            }
             /* ---------- arithmetic, comparison ---------------------------- */
             case TAC_ADD: case TAC_SUB: case TAC_MUL: case TAC_DIV:
             {
@@ -481,7 +577,9 @@ void generateMIPSFromTAC(const char* filename) {
                 int d = defReg(i->result);
                 fprintf(out, "    %-4s $t%d, $t%d, $t%d       # %s = %s %s %s\n",
                         mnemonicFor(i->op), d, a, b,
-                        i->result, i->arg1, mnemonicFor(i->op), i->arg2);
+                        i->result, i->arg1,
+                        i->op == TAC_ADD ? "+" : i->op == TAC_SUB ? "-" :
+                        i->op == TAC_MUL ? "*" : "/", i->arg2);
                 break;
             }
 
@@ -511,39 +609,111 @@ void generateMIPSFromTAC(const char* filename) {
             }
 
 
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * CALLS AND RETURNS — the heart of the calling convention.
- *
- * For a CALL:
- *   1. put the arguments in $a0-$a3 while the $t registers are still valid
- *   2. THEN flush every dirty register to memory ($t0-$t9 are
- *      caller-saved: the callee may clobber all of them)
- *   3. jal to the function label
- *   4. the result comes back in $v0
- * Getting steps 1 and 2 in the wrong order is the classic bug, and it
- * produces a compiler that works until a function takes two arguments.
- *
- * For a RETURN: put the value in $v0, then JUMP TO THE EPILOGUE.  Do not
- * just fall through — a `return` in the middle of a function has to skip
- * everything after it, and the epilogue is the only place that restores
- * $ra and pops the frame.
- *
- * An array passed as an argument is passed as its base ADDRESS.
- * -------------------------------------------------------------- */
-/* --------------------------------------------------------------
- * TODO (Topic 3)
- * ARRAY_LOAD and ARRAY_STORE.  Compute the element address once with
- * elementAddrReg, then a single lw or sw.  Note ARRAY_STORE keeps the
- * value being stored in the `result` field — read the TAC listing rather
- * than guessing which field is which.
- * -------------------------------------------------------------- */
+            /* ======================================================
+             * CALLS AND RETURNS — the calling convention  DONE (Topic 3)
+             * ====================================================== */
+
+            /* ARG: just remember the operand; the CALL does the moving. */
+            case TAC_ARG:
+                if (argCount >= MAX_PENDING_ARGS) {
+                    fprintf(stderr, "codegen: too many pending arguments\n");
+                    exit(1);
+                }
+                argBuffer[argCount++] = i->arg1;
+                break;
+
+            case TAC_CALL: {
+                int n = atoi(i->arg2);
+                if (n > MAX_ARGS) {
+                    fprintf(stderr, "codegen: call to '%s' passes %d arguments; "
+                                    "at most %d are supported\n", i->arg1, n, MAX_ARGS);
+                    exit(1);
+                }
+                int first = argCount - n;         /* this call's ARGs */
+                fprintf(out, "    # call %s(%d argument%s)\n", i->arg1, n, n == 1 ? "" : "s");
+
+                /* STEP 1 — arguments into $a0-$a3 while the $t registers
+                 * still hold valid values.  Arrays go by ADDRESS. */
+                for (int k = 0; k < n; k++) {
+                    const char* a = argBuffer[first + k];
+                    Symbol* s = isConstant(a) ? NULL : lookupSymbol(a);
+                    char areg[8]; snprintf(areg, sizeof areg, "$a%d", k);
+                    if (s && s->isArray) {
+                        emitArrayBase(areg, a);
+                    } else if (isConstant(a)) {
+                        fprintf(out, "    li   $a%d, %s            # arg %d\n", k, a, k + 1);
+                    } else {
+                        int r = operandReg(a);
+                        fprintf(out, "    move $a%d, $t%d            # arg %d: %s\n", k, r, k + 1, a);
+                    }
+                }
+                argCount = first;                 /* consumed */
+
+                /* STEP 2 — THEN write back every dirty $t register: they are
+                 * caller-saved, the callee may clobber all of them.  (Doing
+                 * this before step 1 would be safe too, but loading args
+                 * after a flush would mean reloading them from memory.)  */
+                flushRegisters("caller-saved registers before jal");
+
+                /* STEP 3 — jump and link: $ra = return address */
+                fprintf(out, "    jal  %s\n", funcLabel(i->arg1));
+
+                /* STEP 4 — the result comes back in $v0 */
+                if (i->result) {
+                    int d = defReg(i->result);
+                    fprintf(out, "    move $t%d, $v0            # %s = return value of %s\n",
+                            d, i->result, i->arg1);
+                }
+                break;
+            }
+
+            /* RETURN: value into $v0, then JUMP TO THE EPILOGUE.  A return
+             * in the middle of a function must skip everything after it, and
+             * the epilogue is the only place that restores $ra and pops the
+             * frame.  Dirty globals are written back first — after the jump
+             * nobody else will. */
+            case TAC_RETURN: {
+                if (i->arg1) {
+                    if (isConstant(i->arg1)) {
+                        fprintf(out, "    li   $v0, %s             # return value\n", i->arg1);
+                    } else {
+                        int r = operandReg(i->arg1);
+                        fprintf(out, "    move $v0, $t%d            # return value: %s\n", r, i->arg1);
+                    }
+                }
+                flushForReturn();                 /* only globals need saving */
+                fprintf(out, "    j    %s__epilogue\n", funcLabel(currentFunc));
+                break;
+            }
+
+            /* ======================================================
+             * ARRAY ELEMENTS                              DONE (Topic 3)
+             * Compute the element address once, then ONE lw or sw.
+             * ====================================================== */
+            case TAC_ARRAY_LOAD: {               /* result = arg1[arg2] */
+                int addr = elementAddrReg(i->arg1, i->arg2);
+                int d = defReg(i->result);
+                fprintf(out, "    lw   $t%d, 0($t%d)         # %s = %s[%s]\n",
+                        d, addr, i->result, i->arg1, i->arg2);
+                releaseReg(addr);
+                break;
+            }
+
+            case TAC_ARRAY_STORE: {              /* arg1[arg2] = result */
+                /* ARRAY_STORE keeps the VALUE in `result` */
+                int v = operandReg(i->result);
+                int addr = elementAddrReg(i->arg1, i->arg2);
+                fprintf(out, "    sw   $t%d, 0($t%d)         # %s[%s] = %s\n",
+                        v, addr, i->arg1, i->arg2, i->result);
+                releaseReg(addr);
+                break;
+            }
             default:
                 break;
             }
         }
 
-        flushRegisters("end of function body");
+        flushForReturn();   /* falling off the end: same as a return */
         emitEpilogue(currentFunc, frameSize);
     }
 

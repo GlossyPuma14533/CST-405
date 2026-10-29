@@ -1,0 +1,24 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * Scope rules:
+ *   line 16: `inner` is used after its block closed — it no longer exists
+ *   line 19: `y` declared twice in the same block
+ *   line 23: parameter `p` redeclared in the function's own scope (params
+ *            and the body's outer declarations share one scope, as in C)
+ *   line 24: `return` at file scope (outside any function)
+ *   line 11: and, because of that stray file-scope statement, the program
+ *            now has statements outside the main() it defines
+ * Expected: 5 semantic errors, exit code 1. */
+int main() {
+    {
+        int inner;
+        inner = 1;
+    }
+    print(inner);
+    {
+        int y;
+        int y;
+    }
+    return 0;
+}
+int f(int p) { int p; return p; }
+return 5;

@@ -1,0 +1,9 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * Missing ';' after a DECLARATION.  The parser only notices when it reads
+ * the next token ('y' on line 7), but the message must name line 6 — the
+ * line that is actually wrong.
+ * Expected: "Syntax Error at line 6: missing ';' after declaration of 'x'". */
+int x
+int y;
+x = 1;
+print(x);
