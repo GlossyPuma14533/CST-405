@@ -9,7 +9,7 @@
 
 | Team member | Video |
 |---|---|
-| Christoffer Hansen | _<link>_ |
+| Christoffer Hansen | https://www.loom.com/share/7e8773635ff54d8d9edcb8ddcc021060 |
 | Emma Schaffner | _<link>_ |
 
 ## Who did what
