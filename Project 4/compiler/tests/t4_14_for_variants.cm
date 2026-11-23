@@ -1,0 +1,30 @@
+/* Expected output: 5  10  1  0  8
+ * Every header part of `for` is optional:
+ *   for (;;)          infinite: only break can leave it
+ *   for (; c; )       behaves exactly like while (c)
+ *   for (i = 0; ; u)  condition omitted means "always true"
+ * and `break` skips the UPDATE of the loop it leaves: the update runs only
+ * after a body that finished normally, so i is still 0 below.
+ * Last: a for loop whose body is a single statement (no braces). */
+int main() {
+    int i; int n;
+    i = 0;
+    for (;;) {                                   /* only break leaves */
+        i = i + 1;
+        while (i < 5) { i = i + 1; }
+        break;
+    }
+    print(i);                                    /* 5  */
+    for (; i < 10; ) i = i + 1;                  /* a while in disguise */
+    print(i);                                    /* 10 */
+    n = 0;
+    for (i = 0; ; i = i + 1) {                   /* no condition */
+        n = n + 1;
+        break;                                   /* skips i = i + 1 */
+    }
+    print(n);                                    /* 1 */
+    print(i);                                    /* 0 */
+    for (i = 1; i < 200; i = i * 2) n = i;       /* 1 2 4 8 ... 128 */
+    print(n / 16);                               /* 128 / 16 = 8 */
+    return 0;
+}

@@ -1,0 +1,26 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * Loop-related semantic errors -- every one reported, each with its line:
+ *   line 14: `break` inside a function body that is NOT inside a loop.
+ *            Being CALLED from a loop does not count: break is lexical.
+ *   line 20: an array used as a loop condition (an array is an address,
+ *            not a value that can be true or false)
+ *   line 21: `k` used in a for condition but never declared
+ *   line 22: a for-init that assigns to a whole array
+ *   line 24: `inner`, declared inside a loop body, used after its '}'
+ * Expected: 5 semantic errors, exit code 1. */
+int g;
+int helper() {
+    g = g + 1;
+    break;
+    return g;
+}
+int main() {
+    int a[4]; int i;
+    while (i < 2) { int inner; inner = helper(); i = i + 1; }
+    while (a) { break; }
+    for (i = 0; i < k; i = i + 1) { }
+    for (a = 0; i < 2; i = i + 1) { }
+    i = 0;
+    print(inner);
+    return 0;
+}

@@ -1,0 +1,33 @@
+/* Expected output: 46  199
+ * BENCHMARK 2 -- a realistic loop nest: the Sieve of Eratosthenes up to 200.
+ * Nested while/for loops, array reads and writes in loop bodies, and a
+ * loop-invariant constant (one) that only the loop-safe constant pass can
+ * propagate into the loops.  Prints the number of primes below 200 (46)
+ * and the largest one (199).  Measured by `make bench`. */
+int main() {
+    int comp[200];
+    int i; int j; int n; int count; int last; int one;
+    n = 200;
+    one = 1;
+    for (i = 0; i < n; i = i + 1) comp[i] = 0;
+    i = 2;
+    while (i * i < n) {
+        j = i * i;
+        while (j < n) {
+            comp[j] = one;
+            j = j + i;
+        }
+        i = i + one;
+    }
+    count = 0; last = 0;
+    for (i = 2; i < n; i = i + 1) {
+        while (comp[i] == 0) {          /* "if prime" without an if: runs once */
+            count = count + one;
+            last = i;
+            break;
+        }
+    }
+    print(count);
+    print(last);
+    return 0;
+}

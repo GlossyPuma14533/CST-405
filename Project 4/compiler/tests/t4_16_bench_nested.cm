@@ -1,0 +1,26 @@
+/* Expected output: 2200  21
+ * BENCHMARK 3 -- three nested for loops with redundant arithmetic in the
+ * innermost body (the shape where optimization pays off most, because the
+ * inner body runs 100 times).  Sum of (a*1 + b + 0) * 2 over a, b in 1..10
+ * (a per-row correction that cancels to zero is folded away), then a triple
+ * loop that counts 3 * 7 * 1 = 21 iterations. */
+int main() {
+    int a; int b; int c; int s; int zero; int two; int count;
+    zero = 3 - 3;
+    two = 1 + 1;
+    s = 0;
+    for (a = 1; a <= 10; a = a + 1) {
+        for (b = 1; b <= 10; b = b + 1) {
+            s = s + (a * 1 + b + zero) * two;
+        }
+        s = s - 2 * 4 + 8;
+    }
+    print(s);
+    count = 0;
+    for (a = 0; a < 3; a = a + 1)
+        for (b = 0; b < 7; b = b + 1)
+            for (c = 0; c < 1; c = c + 1)
+                count = count + 1;
+    print(count);
+    return 0;
+}

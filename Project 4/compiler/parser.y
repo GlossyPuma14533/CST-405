@@ -14,10 +14,11 @@
  * WHAT COMES NEXT
  *   Topic 5 adds decisions (if, if-else, switch) and the logical operators.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 4)  is yours to write.
- *   Everything else already works — it is the Topic 3 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Topic 4 loops and relational operators are implemented.  Project 4
+ *   also restores our Project 3 work: file-scope statements (implicit
+ *   main), deferred syntax errors and precise "missing ';'" messages
+ *   (now including `break`).
  * ========================================================================= */
 
 %{
@@ -54,7 +55,29 @@ extern int yylineno;  /* Line number from scanner */
 
 void yyerror(const char* s);
 ASTNode* root = NULL;
+
+/* DEFERRED SYNTAX ERRORS (restored from our Project 2/3 work)
+ * Bison calls yyerror() the instant it hits a bad token, BEFORE it knows
+ * whether one of the error productions below will recognise the mistake.
+ * So yyerror() only REMEMBERS the generic message.  If an error production
+ * fires, it prints a precise message ("missing ';' after ...") and discards
+ * the generic one; otherwise main() calls flushSyntaxError() to print it.
+ * Result: exactly one, as-specific-as-possible message per error. */
+static char pendingError[512];
+static int  pendingLine = 0;
+static int  hasPendingError = 0;
+static void discardPendingError(void) { hasPendingError = 0; }
+void flushSyntaxError(void);
 %}
+
+/* Messages that say what was found and what was expected:
+ *   "syntax error, unexpected ID, expecting ';' or '+'"  */
+%define parse.error verbose
+
+/* Track source locations (@n).  scanner.l fills yylloc via YY_USER_ACTION.
+ * A missing ';' is only noticed at the NEXT token (often on the next line),
+ * so @n lets us name the line that is actually wrong. */
+%locations
 
 /* SEMANTIC VALUES UNION */
 %union {
@@ -76,6 +99,7 @@ ASTNode* root = NULL;
 %type <node> decl_or_func_list decl_or_func func_def params param_list param
 %type <node> return_stmt block func_call arg_list args
 %type <node> while_stmt for_stmt for_init for_cond for_update break_stmt
+%type <node> top_stmt
 
 /* OPERATOR PRECEDENCE AND ASSOCIATIVITY
  * Listed from lowest to highest precedence.
@@ -123,6 +147,26 @@ decl_or_func_list:
 decl_or_func:
     func_def { $$ = $1; }
     | decl { $$ = $1; }
+    | top_stmt { $$ = $1; }
+    ;
+
+/* TOP-LEVEL STATEMENTS (restored from Project 3: Topic 2 compatibility)
+ * The Topic 2 tests are a flat list of statements with no main().  So the
+ * executable statement forms are also accepted at file scope; semantic.c and
+ * tac.c gather them into an IMPLICIT main(), and semantic.c rejects a program
+ * that mixes them with an explicit main().  Topic 4 adds the loops (and
+ * break, so that a stray break is a SEMANTIC error with a line number, not a
+ * cryptic syntax error).  `return` parses here for the same reason.
+ * Still LALR(1) with no conflicts: after `INT ID` the next token
+ * ( '(' , ';' or '[' ) decides between a function and a declaration. */
+top_stmt:
+    assign                          { $$ = $1; }
+    | print_stmt                    { $$ = $1; }
+    | return_stmt                   { $$ = $1; }
+    | while_stmt                    { $$ = $1; }
+    | for_stmt                      { $$ = $1; }
+    | break_stmt                    { $$ = $1; }
+    | func_call ';'                 { $$ = $1; }
     ;
 
 
@@ -130,10 +174,12 @@ decl_or_func:
 func_def:
     INT ID '(' params ')' block {
         $$ = createFuncDef($2, $4, $6);
+        $$->lineno = @2.first_line;   /* report errors at the function name */
         free($2);
     }
     | INT ID '(' ')' block {
         $$ = createFuncDef($2, NULL, $5);
+        $$->lineno = @2.first_line;
         free($2);
     }
     ;
@@ -202,7 +248,18 @@ stmt:
  * is NOT a syntactic question (a grammar cannot know the loop nesting
  * depth), so semantic.c checks it. */
 break_stmt:
-    BREAK ';' { $$ = createBreak(); }
+    BREAK ';' {
+        $$ = createBreak();
+        $$->lineno = @1.first_line;   /* the line of the keyword itself */
+    }
+    /* Error production: `break` with no ';' */
+    | BREAK error {
+        discardPendingError();
+        fprintf(stderr, "Syntax Error at line %d: missing ';' after 'break'\n",
+                @1.first_line);
+        $$ = NULL;
+        YYABORT;
+    }
     ;
 
 /* DECLARATION - int x; or int arr[10]; */
@@ -214,6 +271,15 @@ decl:
     | INT ID '[' NUM ']' ';' {
         $$ = createArrayDecl($2, $4);
         free($2);
+    }
+    /* Error production: `int x` with no ';' */
+    | INT ID error {
+        discardPendingError();
+        fprintf(stderr, "Syntax Error at line %d: missing ';' after declaration of '%s'\n",
+                @2.first_line, $2);
+        free($2);
+        $$ = NULL;
+        YYABORT;
     }
     ;
 
@@ -229,6 +295,23 @@ assign:
         $$->data.assign.arrayLHS = lhs;
         free($1);
     }
+    /* Error productions: missing ';' after either form */
+    | ID '=' expr error {
+        discardPendingError();
+        fprintf(stderr, "Syntax Error at line %d: missing ';' after assignment to '%s'\n",
+                @3.last_line, $1);
+        free($1);
+        $$ = NULL;
+        YYABORT;
+    }
+    | ID '[' expr ']' '=' expr error {
+        discardPendingError();
+        fprintf(stderr, "Syntax Error at line %d: missing ';' after assignment to '%s[...]'\n",
+                @6.last_line, $1);
+        free($1);
+        $$ = NULL;
+        YYABORT;
+    }
     ;
 
 /* RETURN STATEMENT */
@@ -238,6 +321,14 @@ return_stmt:
     }
     | RETURN ';' {
         $$ = createReturn(NULL);
+    }
+    /* Error production: `return x` with no ';' */
+    | RETURN expr error {
+        discardPendingError();
+        fprintf(stderr, "Syntax Error at line %d: missing ';' after return statement\n",
+                @2.last_line);
+        $$ = NULL;
+        YYABORT;
     }
     ;
 
@@ -328,10 +419,12 @@ expr:
 func_call:
     ID '(' args ')' {
         $$ = createFuncCall($1, $3);
+        $$->lineno = @1.first_line;
         free($1);
     }
     | ID '(' ')' {
         $$ = createFuncCall($1, NULL);
+        $$->lineno = @1.first_line;
         free($1);
     }
     ;
@@ -356,11 +449,30 @@ print_stmt:
     PRINT '(' expr ')' ';' {
         $$ = createPrint($3);
     }
+    /* Error production: `print(x)` with no ';' */
+    | PRINT '(' expr ')' error {
+        discardPendingError();
+        fprintf(stderr, "Syntax Error at line %d: missing ';' after print statement\n",
+                @4.first_line);
+        $$ = NULL;
+        YYABORT;
+    }
     ;
 
 %%
 
 /* ERROR HANDLING */
+/* yyerror: remember the message and the line (see DEFERRED SYNTAX ERRORS). */
 void yyerror(const char* s) {
-    fprintf(stderr, "Syntax Error at line %d: %s\n", yylineno, s);
+    snprintf(pendingError, sizeof pendingError, "%s", s);
+    pendingLine = yylineno;
+    hasPendingError = 1;
+}
+
+/* Print a syntax error that no error production claimed.  Called by main()
+ * whenever yyparse() fails. */
+void flushSyntaxError(void) {
+    if (hasPendingError)
+        fprintf(stderr, "Syntax Error at line %d: %s\n", pendingLine, pendingError);
+    hasPendingError = 0;
 }

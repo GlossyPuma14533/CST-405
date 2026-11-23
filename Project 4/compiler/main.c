@@ -11,10 +11,9 @@
  * WHAT COMES NEXT
  *   Topic 5 adds decisions (if, if-else, switch) and the logical operators.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 4)  is yours to write.
- *   Everything else already works — it is the Topic 3 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Every TODO (Topic 4) in this file has been implemented, plus the
+ *   -O0 / -O1 levels used by `make bench`.
  * ========================================================================= */
 
 /* ============================================================================
@@ -34,10 +33,16 @@
  * the work of fixing it.
  *
  * USAGE
- *   ./minicompiler <input.c> <output.s> [-q]
+ *   ./minicompiler <input.c> <output.s> [-q] [-O0 | -O1]
  *
  *   -q   quiet: print only errors and the final summary.  Use this once the
  *        trace stops being useful and you just want the assembly.
+ *   -O0  no optimization at all: phase 5 is skipped and the back end
+ *        translates the raw TAC without its peepholes.  This is the baseline
+ *        for measuring what optimization buys (make bench).
+ *   -O1  the TAC optimizer only (phase 5), back-end peepholes off.
+ *        (Default, no flag: both — the TAC optimizer and the back-end
+ *        peepholes: immediates, compare-and-branch fusion, no dead stores.)
  *
  * SIDE OUTPUTS (named after <output.s>)
  *   output.tac            the intermediate code before optimization
@@ -55,8 +60,12 @@
 extern int yyparse(void);
 extern FILE* yyin;
 extern ASTNode* root;
+extern int lexErrors;                /* scanner.l: count of bad characters  */
+extern void flushSyntaxError(void);  /* parser.y: print a deferred message  */
 
 int quiet = 0;   /* Set by -q; consulted by the banner helpers below */
+static int noOptimize = 0;   /* Set by -O0: benchmark baseline        */
+static int optLevel   = 2;   /* 0, 1 or 2 (default), for the report   */
 
 /* --------------------------------------------------------------------------
  * Phase timing.  Topic 4 asks you to quantify what optimization buys; Topic 6
@@ -97,12 +106,19 @@ static void deriveTacNames(const char* out, char* tac, char* opt) {
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        printf("Usage: %s <input.c> <output.s> [-q]\n", argv[0]);
+        printf("Usage: %s <input.c> <output.s> [-q] [-O0 | -O1]\n", argv[0]);
         printf("Example: ./minicompiler test.c test.s\n");
         return 1;
     }
-    for (int i = 3; i < argc; i++)
+    for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "-q") == 0) quiet = 1;
+        else if (strcmp(argv[i], "-O0") == 0) { noOptimize = 1; codegenOptimize = 0; optLevel = 0; }
+        else if (strcmp(argv[i], "-O1") == 0) { codegenOptimize = 0; optLevel = 1; }
+        else {
+            fprintf(stderr, "Error: unknown option '%s' (expected -q, -O0 or -O1)\n", argv[i]);
+            return 1;
+        }
+    }
 
     yyin = fopen(argv[1], "r");
     if (!yyin) {
@@ -129,6 +145,15 @@ int main(int argc, char* argv[]) {
     int parseFailed = yyparse();
     endPhase(0);
 
+    if (parseFailed != 0) flushSyntaxError();
+    if (lexErrors > 0 && parseFailed == 0) {
+        /* The scanner skipped the bad characters, so the parse may have
+         * succeeded, but the source is still not a legal program. */
+        printf("\n✗ Compilation stopped: %d lexical error%s (see above).\n",
+               lexErrors, lexErrors == 1 ? "" : "s");
+        fclose(yyin);
+        return 1;
+    }
     if (parseFailed != 0 || root == NULL) {
         printf("\n✗ Compilation stopped: the program is not syntactically valid.\n");
         printf("  Fix the errors listed above and compile again.\n");
@@ -178,7 +203,12 @@ int main(int argc, char* argv[]) {
 
     /* ---------------- PHASE 5: optimization ------------------------------- */
     beginPhase(4);
-    optimizeTAC();
+    if (noOptimize) {
+        skipOptimization();          /* -O0: back end gets the raw TAC */
+        if (!quiet) printf("Optimization disabled (-O0): using the TAC unchanged.\n");
+    } else {
+        optimizeTAC();
+    }
     if (!quiet) printOptimizedTAC();
     saveOptimizedTACToFile(optTacFile);
     endPhase(4);
@@ -197,7 +227,9 @@ int main(int argc, char* argv[]) {
     printf("╚══════════════════════════════════════════════════════════════╝\n");
     printf("  Assembly written to : %s\n", argv[2]);
     printf("  TAC listings        : %s, %s\n", tacFile, optTacFile);
-    printf("\n  Optimization\n");
+    printf("\n  Optimization  (level -O%d%s)\n", optLevel,
+           optLevel == 0 ? ": disabled" : optLevel == 1 ? ": TAC optimizer only" :
+                           ": TAC optimizer + back-end peepholes");
     printf("    passes to fixed point : %d\n", os.passes);
     printf("    TAC instructions      : %d -> %d",
            os.instructionsBefore, os.instructionsAfter);

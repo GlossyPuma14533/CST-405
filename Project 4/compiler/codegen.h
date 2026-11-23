@@ -11,10 +11,8 @@
  * WHAT COMES NEXT
  *   Topic 5 adds decisions (if, if-else, switch) and the logical operators.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 4)  is yours to write.
- *   Everything else already works — it is the Topic 3 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Every TODO (Topic 4) in this file has been implemented.
  * ========================================================================= */
 
 #ifndef CODEGEN_H
@@ -95,6 +93,9 @@ typedef struct {
 /* Register allocator lifecycle (exposed so main.c can report statistics) */
 void initRegAlloc(void);
 void printRegAllocStats(void);
+
+/* 1 (default) = back-end peepholes on; main.c sets 0 for -O0. */
+extern int codegenOptimize;
 
 /* The one entry point: translate the optimized TAC into a MIPS .s file. */
 void generateMIPSFromTAC(const char* filename);

@@ -1,0 +1,12 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * Expected: "Syntax Error at line 9: missing ';' after 'break'", exit code 1.
+ * The parser only notices at the '}' on line 10; the error production names
+ * the line of the `break` itself. */
+int main() {
+    int i;
+    i = 0;
+    while (i < 3) {
+        break
+    }
+    return 0;
+}

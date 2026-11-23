@@ -12,10 +12,10 @@
  * WHAT COMES NEXT
  *   Topic 5 adds decisions (if, if-else, switch) and the logical operators.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 4)  is yours to write.
- *   Everything else already works — it is the Topic 3 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Topic 4 label and branch emission is implemented.  Project 4 also
+ *   restores register pinning and adds back-end peepholes (dead-store-free
+ *   flushes, immediates, compare-and-branch fusion), all off under -O0/-O1.
  * ========================================================================= */
 
 /* ============================================================================
@@ -53,6 +53,11 @@ static int   argBufCount = 0;
 static int paramIndex = 0;        /* Which $aN the next parameter arrives in */
 static int frameSize  = 0;        /* Size of the frame being generated       */
 static const char* currentFunc = NULL;
+
+/* Back-end peepholes added in Project 4 (see PART 4 and flushRegisters).
+ * main.c turns them off with -O0 so that the benchmark baseline is the
+ * plain translation of the unoptimized TAC. */
+int codegenOptimize = 1;
 
 /* ==========================================================================
  * NAME MANGLING
@@ -155,18 +160,37 @@ static int findVarReg(const char* name) {
     return -1;
 }
 
+/* PINNED REGISTERS (restored from our Project 3 code generator).
+ * One TAC instruction may need several registers at once (two operands, a
+ * destination, an array base and offset).  A register handed out for the
+ * CURRENT instruction is pinned, so the LRU allocator can never evict it to
+ * satisfy the next request of that same instruction.  Without this, with
+ * all ten $t registers busy,  arr[1] = 5  loaded 5 into a register and then
+ * reused that same register for the array's base address, storing the
+ * address instead of 5.  Found by differential fuzzing in Project 4 (random
+ * loop programs, -O0 vs -O2 vs a reference interpreter); it was present in
+ * the Topic 4 starting code at every optimization level. */
+static int pinned[NUM_TEMP_REGS];
+static void unpinAll(void) { for (int i = 0; i < NUM_TEMP_REGS; i++) pinned[i] = 0; }
+
 /* Least-recently-used register — the one whose value we can most afford
  * to lose.  A real compiler would use liveness information here; LRU is a
- * good approximation and is easy to reason about in class. */
+ * good approximation and is easy to reason about in class.  Registers
+ * pinned by the current instruction are never chosen. */
 static int selectVictimReg(void) {
-    int victim = 0, oldest = regAlloc.regs[0].lastUsed;
-    for (int i = 1; i < NUM_TEMP_REGS; i++) {
+    int victim = -1, oldest = 0;
+    for (int i = 0; i < NUM_TEMP_REGS; i++) {
+        if (pinned[i]) continue;               /* in use by THIS instruction */
         /* Values with no memory home are the cheapest to discard */
         if (!regAlloc.regs[i].hasHome && regAlloc.regs[i].inUse) return i;
-        if (regAlloc.regs[i].lastUsed < oldest) {
+        if (victim == -1 || regAlloc.regs[i].lastUsed < oldest) {
             oldest = regAlloc.regs[i].lastUsed;
             victim = i;
         }
+    }
+    if (victim == -1) {                        /* cannot happen: <= 5 pins */
+        fprintf(stderr, "codegen: every register is pinned\n");
+        exit(1);
     }
     return victim;
 }
@@ -185,7 +209,7 @@ static void spillReg(int r) {
  * primed with the value already in memory. */
 static int getReg(const char* name, int hasHome, int load) {
     int r = findVarReg(name);
-    if (r != -1) return r;                       /* Already cached          */
+    if (r != -1) { pinned[r] = 1; return r; }    /* Already cached          */
 
     for (r = 0; r < NUM_TEMP_REGS; r++)          /* A free register?        */
         if (!regAlloc.regs[r].inUse) break;
@@ -206,6 +230,7 @@ static int getReg(const char* name, int hasHome, int load) {
         emitLoadHome(r, name);
         regAlloc.loadCount++;
     }
+    pinned[r] = 1;                               /* safe for this instruction */
     return r;
 }
 
@@ -222,6 +247,9 @@ static int defReg(const char* name) {
 /* Anonymous register for address arithmetic; never written back, because it
  * holds an address we computed rather than a value the program named. */
 static int scratchCounter = 0;
+
+/* Set by a comparison that has been fused into the branch after it. */
+static TACInstr* fusedCompare = NULL;
 static int scratchReg(void) {
     char n[MAX_VAR_NAME];
     snprintf(n, sizeof n, "#s%d", scratchCounter++);
@@ -229,6 +257,7 @@ static int scratchReg(void) {
 }
 static void releaseReg(int r) {
     if (r < 0) return;
+    pinned[r] = 0;
     regAlloc.regs[r].inUse      = 0;
     regAlloc.regs[r].isDirty    = 0;
     regAlloc.regs[r].hasHome    = 0;
@@ -241,7 +270,7 @@ static int operandReg(const char* s) {
         char n[MAX_VAR_NAME];
         snprintf(n, sizeof n, "#k%s", s);
         int r = findVarReg(n);
-        if (r != -1) return r;
+        if (r != -1) { pinned[r] = 1; return r; }
         r = getReg(n, 0, 0);
         fprintf(out, "    li   $t%d, %s\n", r, s);
         return r;
@@ -251,15 +280,60 @@ static int operandReg(const char* s) {
 
 /* Write every dirty register back to memory, then forget all cached values.
  * Called before `jal` (the callee owns $t0-$t9) and before any label, since
- * control may reach a label from somewhere with a different cache state. */
-static void flushRegisters(const char* why) {
+ * control may reach a label from somewhere with a different cache state.
+ *
+ * WHAT MUST BE WRITTEN BACK (Project 4).  Writing back a value nobody will
+ * read again is pure cost, and inside a loop it is paid every iteration:
+ *   FLUSH_ALL      before a call: a temporary CAN be live across a call,
+ *                  e.g.  (g + 0) + f()  holds the left operand meanwhile.
+ *   FLUSH_NO_TEMPS at labels, jumps and branches: a temporary never lives
+ *                  across a basic-block boundary (the invariant documented
+ *                  at isReadLater in tac.c), so dead temporaries are dropped.
+ *   FLUSH_GLOBALS  at return / end of function: locals and temporaries die
+ *                  with the activation record; only globals must reach
+ *                  memory.  (Restored from our Project 3 code generator.)
+ * With -O0 every flush is FLUSH_ALL, the original behaviour. */
+typedef enum { FLUSH_ALL, FLUSH_NO_TEMPS, FLUSH_GLOBALS } FlushMode;
+
+static int mustWriteBack(int r, FlushMode mode) {
+    if (!(regAlloc.regs[r].inUse && regAlloc.regs[r].isDirty && regAlloc.regs[r].hasHome))
+        return 0;
+    if (!codegenOptimize || mode == FLUSH_ALL) return 1;
+    const char* n = regAlloc.regs[r].varName;
+    if (mode == FLUSH_NO_TEMPS) return !isTemp(n);
+    Symbol* sym = lookupSymbol(n);                       /* FLUSH_GLOBALS */
+    return sym && sym->isGlobal;
+}
+
+static void flushRegistersMode(const char* why, FlushMode mode) {
     int any = 0;
     for (int i = 0; i < NUM_TEMP_REGS; i++)
-        if (regAlloc.regs[i].inUse && regAlloc.regs[i].isDirty && regAlloc.regs[i].hasHome) any = 1;
+        if (mustWriteBack(i, mode)) any = 1;
     if (any) fprintf(out, "    # write back live values (%s)\n", why);
     for (int i = 0; i < NUM_TEMP_REGS; i++) {
-        spillReg(i);
+        if (mustWriteBack(i, mode)) spillReg(i);
         releaseReg(i);
+    }
+}
+
+static void flushRegisters(const char* why) { flushRegistersMode(why, FLUSH_ALL); }
+
+/* Before a CONDITIONAL branch (Project 4).  Memory must be current on the
+ * taken path, so dirty values are written back exactly as for a label.  But
+ * the FALL-THROUGH path is reachable only from here, and a branch changes no
+ * register, so the cached values stay valid there: keep them (now clean)
+ * instead of reloading them from memory one instruction later.  Dead
+ * temporaries are still dropped.  With -O0: the original full flush. */
+static void flushBeforeBranch(void) {
+    if (!codegenOptimize) { flushRegisters("before conditional branch"); return; }
+    int any = 0;
+    for (int i = 0; i < NUM_TEMP_REGS; i++)
+        if (mustWriteBack(i, FLUSH_NO_TEMPS)) any = 1;
+    if (any) fprintf(out, "    # write back live values (before conditional branch)\n");
+    for (int i = 0; i < NUM_TEMP_REGS; i++) {
+        if (!regAlloc.regs[i].inUse) continue;
+        if (mustWriteBack(i, FLUSH_NO_TEMPS)) spillReg(i);
+        if (isTemp(regAlloc.regs[i].varName)) releaseReg(i);  /* dead past here */
     }
 }
 
@@ -484,10 +558,12 @@ void generateMIPSFromTAC(const char* filename) {
         paramIndex  = 0;
         argBufCount = 0;
         initRegAlloc();
+        unpinAll();
 
         emitPrologue(currentFunc, frameSize);
 
         for (TACInstr* i = c->next; i && i->op != TAC_FUNC_END; i = i->next) {
+            unpinAll();     /* a new instruction: the last one's registers may go */
             switch (i->op) {
 
             /* ---------- storage declarations: no code, just a comment ----- */
@@ -524,6 +600,53 @@ void generateMIPSFromTAC(const char* filename) {
             case TAC_LT:  case TAC_GT:  case TAC_LE:  case TAC_GE:
             case TAC_EQ:  case TAC_NE:
             {
+                /* PEEPHOLE: COMPARE-AND-BRANCH FUSION (Project 4).
+                 * A loop test is generated as
+                 *       t = i <= 100
+                 *       IF_FALSE t GOTO Lend
+                 * which costs a set-on-condition AND a branch on its result.
+                 * When the very next instruction is that branch and t is read
+                 * nowhere else, emit nothing here: the IF_FALSE case emits ONE
+                 * branch on the inverted condition (bgt i, 100, Lend).  An
+                 * immediate right operand is used directly. */
+                if (codegenOptimize && i->op >= TAC_LT && i->op <= TAC_NE &&
+                    i->next && (i->next->op == TAC_IF_FALSE || i->next->op == TAC_IF_TRUE) &&
+                    i->next->arg1 && strcmp(i->next->arg1, i->result) == 0 && isTemp(i->result)) {
+                    fusedCompare = i;
+                    break;
+                }
+
+                /* PEEPHOLE: IMMEDIATE OPERANDS (Project 4).
+                 *   x + 5   ->  addi d, x, 5      (no li for the constant)
+                 *   x - 5   ->  addi d, x, -5
+                 *   x * 8   ->  sll  d, x, 3      (strength reduction)
+                 * Constants on the left of + and * are swapped to the right
+                 * (both are commutative). */
+                if (codegenOptimize && (i->op == TAC_ADD || i->op == TAC_SUB || i->op == TAC_MUL)) {
+                    const char* x = i->arg1; const char* k = i->arg2;
+                    if (i->op != TAC_SUB && isConstant(x) && !isConstant(k)) { x = i->arg2; k = i->arg1; }
+                    if (!isConstant(x) && isConstant(k)) {
+                        long kv = atol(k);
+                        if (i->op == TAC_SUB) kv = -kv;
+                        if (i->op != TAC_MUL && kv >= -32768 && kv <= 32767) {
+                            int a = operandReg(x);
+                            int d = defReg(i->result);
+                            fprintf(out, "    addi $t%d, $t%d, %ld        # %s = %s %s %s\n",
+                                    d, a, kv, i->result, i->arg1,
+                                    i->op == TAC_ADD ? "+" : "-", i->arg2);
+                            break;
+                        }
+                        if (i->op == TAC_MUL && kv > 1 && (kv & (kv - 1)) == 0) {
+                            int sh = 0; while ((1L << sh) < kv) sh++;
+                            int a = operandReg(x);
+                            int d = defReg(i->result);
+                            fprintf(out, "    sll  $t%d, $t%d, %d         # %s = %s * %s (shift)\n",
+                                    d, a, sh, i->result, i->arg1, i->arg2);
+                            break;
+                        }
+                    }
+                }
+
                 int a = operandReg(i->arg1);
                 int b = operandReg(i->arg2);
                 int d = defReg(i->result);
@@ -568,12 +691,12 @@ void generateMIPSFromTAC(const char* filename) {
             case TAC_LABEL:
                 /* Flush BEFORE the label so the fall-through path writes back;
                  * code after the label then starts with an empty cache. */
-                flushRegisters("label: paths may join here");
+                flushRegistersMode("label: paths may join here", FLUSH_NO_TEMPS);
                 fprintf(out, "%s:\n", i->result);
                 break;
 
             case TAC_GOTO:
-                flushRegisters("before jump");     /* target expects memory current */
+                flushRegistersMode("before jump", FLUSH_NO_TEMPS); /* target expects memory current */
                 fprintf(out, "    j    %s\n", i->arg1);
                 break;
 
@@ -584,8 +707,35 @@ void generateMIPSFromTAC(const char* filename) {
                  * change $t values), so the branch can still use the register;
                  * but the stores must come BEFORE the branch, because a taken
                  * branch would skip them. */
+                if (fusedCompare) {
+                    /* Fused with the comparison just before (see PEEPHOLE:
+                     * COMPARE-AND-BRANCH FUSION).  IF_FALSE jumps when the
+                     * comparison is FALSE, so it uses the inverse relation. */
+                    TACInstr* cmp = fusedCompare;
+                    fusedCompare = NULL;
+                    int jumpIfTrue = (i->op == TAC_IF_TRUE);
+                    const char* br;
+                    switch (cmp->op) {
+                        case TAC_LT: br = jumpIfTrue ? "blt" : "bge"; break;
+                        case TAC_GT: br = jumpIfTrue ? "bgt" : "ble"; break;
+                        case TAC_LE: br = jumpIfTrue ? "ble" : "bgt"; break;
+                        case TAC_GE: br = jumpIfTrue ? "bge" : "blt"; break;
+                        case TAC_EQ: br = jumpIfTrue ? "beq" : "bne"; break;
+                        default:     br = jumpIfTrue ? "bne" : "beq"; break;
+                    }
+                    int a = operandReg(cmp->arg1);
+                    char rhs[32];
+                    if (isConstant(cmp->arg2)) snprintf(rhs, sizeof rhs, "%s", cmp->arg2);
+                    else snprintf(rhs, sizeof rhs, "$t%d", operandReg(cmp->arg2));
+                    flushBeforeBranch();
+                    fprintf(out, "    %-4s $t%d, %s, %s   # %s %s (fused: %s %s %s)\n",
+                            br, a, rhs, i->arg2,
+                            i->op == TAC_IF_FALSE ? "if_false" : "if_true", i->arg1,
+                            cmp->arg1, mnemonicFor(cmp->op), cmp->arg2);
+                    break;
+                }
                 int a = operandReg(i->arg1);
-                flushRegisters("before conditional branch");
+                flushBeforeBranch();
                 fprintf(out, "    %-4s $t%d, $zero, %s   # %s %s\n",
                         i->op == TAC_IF_FALSE ? "beq" : "bne", a, i->arg2,
                         i->op == TAC_IF_FALSE ? "if_false" : "if_true", i->arg1);
@@ -641,7 +791,7 @@ void generateMIPSFromTAC(const char* filename) {
                     int a = operandReg(i->arg1);
                     fprintf(out, "    move $v0, $t%d            # return %s\n", a, i->arg1);
                 }
-                flushRegisters("before return");
+                flushRegistersMode("before return", FLUSH_GLOBALS);
                 fprintf(out, "    j    %s__epilogue\n", funcLabel(currentFunc));
                 break;
 
@@ -668,7 +818,7 @@ void generateMIPSFromTAC(const char* filename) {
             }
         }
 
-        flushRegisters("end of function body");
+        flushRegistersMode("end of function body", FLUSH_GLOBALS);
         emitEpilogue(currentFunc, frameSize);
     }
 

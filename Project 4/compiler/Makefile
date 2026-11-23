@@ -3,6 +3,10 @@
 # ----------------------------------------------------------------------------
 #   make            build ./minicompiler
 #   make test       compile and run every program in tests/ under SPIM
+#   make check      PASS/FAIL regression suite (tests/ and tests_neg/,
+#                   every passing program both optimized and with -O0)
+#   make bench      optimized vs unoptimized (-O0 / -O1 / -O2) benchmark table
+#   make fuzz       200 random loop programs, every level vs a reference
 #   make clean      remove everything that `make` produced
 #
 # The two generated files are worth knowing about:
@@ -62,8 +66,28 @@ test: $(TARGET)
 	   spim -file $${f%.cm}.s 2>/dev/null | grep -v '^Loaded'; \
 	done
 
+# ----------------------------------------------------------------------------
+# PASS/FAIL against each test's stated expectation (see run_tests.sh).
+# ----------------------------------------------------------------------------
+check: $(TARGET)
+	@bash run_tests.sh
+
+# ----------------------------------------------------------------------------
+# Optimized vs unoptimized: compile each benchmark with and without -O0, run
+# both, and count executed instructions (bench/run_bench.sh).
+# ----------------------------------------------------------------------------
+bench: $(TARGET)
+	@bash bench/run_bench.sh
+
+# ----------------------------------------------------------------------------
+# Differential fuzzing: random programs vs a reference interpreter.
+# ----------------------------------------------------------------------------
+fuzz: $(TARGET)
+	@bash bench/run_fuzz.sh 200
+
 clean:
 	rm -f $(TARGET) $(OBJS) lex.yy.c parser.tab.c parser.tab.h parser.output
-	rm -f tests/*.s tests/*.tac *.s *.tac
+	rm -f tests/*.s tests/*.tac tests_neg/*.s tests_neg/*.tac *.s *.tac
+	rm -rf bench/out
 
-.PHONY: all clean test
+.PHONY: all clean test check bench fuzz

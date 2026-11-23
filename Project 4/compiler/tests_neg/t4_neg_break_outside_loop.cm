@@ -1,4 +1,4 @@
-/* Expected: SEMANTIC ERROR "break outside of any loop" at line 4, exit code 1 (compile must FAIL) */
+/* Expected: SEMANTIC ERROR "break outside of any loop" at line 5, exit code 1 (compile must FAIL) */
 int main() {
   int x;
   x = 1;

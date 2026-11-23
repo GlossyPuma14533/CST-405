@@ -1,0 +1,10 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * A file-scope loop is fine in a Topic 2 style program (it becomes part of
+ * the implicit main), but this program ALSO defines main(), so the loop on
+ * line 10 could never run.  Expected: "Statements Outside main" reported at
+ * main (line 8), exit code 1. */
+int i;
+int s;
+int main() { return 0; }
+s = 0;
+for (i = 0; i < 3; i = i + 1) s = s + i;

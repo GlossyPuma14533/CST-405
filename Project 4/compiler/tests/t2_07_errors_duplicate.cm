@@ -1,0 +1,10 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * Two semantic errors in one program; the analyzer must report BOTH,
+ * each with its own line number, instead of stopping at the first.
+ * Expected: duplicate declaration of 'x' (line 7) and assignment to
+ * undeclared 'y' (line 9). */
+int x;
+int x;
+x = 3;
+y = x + 1;
+print(x);

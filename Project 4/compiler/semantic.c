@@ -12,10 +12,11 @@
  * WHAT COMES NEXT
  *   Topic 5 adds decisions (if, if-else, switch) and the logical operators.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 4)  is yours to write.
- *   Everything else already works — it is the Topic 3 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Topic 4 break-depth checking is implemented.  Project 4 also restores
+ *   our Project 3 checks (entry point / implicit main, duplicate and reserved
+ *   parameters, array-vs-scalar misuse, 4-parameter limit) and checks every
+ *   argument of a call.
  * ========================================================================= */
 
 /* SEMANTIC ANALYSIS IMPLEMENTATION - WITH FUNCTION SUPPORT
@@ -40,11 +41,17 @@ typedef struct {
     char* params[MAX_PARAMS];
     int paramIsArray[MAX_PARAMS];  /* Track which params are arrays */
     int isDefined;
+    int lineno;                    /* where it is defined (0 = built-in) */
 } FunctionSymbol;
+
+/* Arguments travel in $a0-$a3 in this compiler's calling convention, and
+ * stack-passed arguments are not implemented, so at most 4 parameters. */
+#define MAX_REG_ARGS 4
 
 /* Scope for variables */
 typedef struct {
     char* names[MAX_VARS];
+    int   isArr[MAX_VARS];   /* 1 = array (or array parameter), 0 = scalar */
     int count;
 } Scope;
 
@@ -61,6 +68,10 @@ static int inFunction = 0;
  * so leaving an INNER loop does not wrongly mark the outer body as "outside". */
 static int breakDepth = 0;
 
+/* 1 once any executable statement appears at FILE scope.  Those statements
+ * form an implicit main() (Topic 2 compatibility, see parser.y top_stmt). */
+static int hasTopLevelStmts = 0;
+
 /* Initialize semantic analyzer */
 void initSemantic() {
     semInfo.errorCount = 0;
@@ -70,6 +81,7 @@ void initSemantic() {
     currentFunction = NULL;
     inFunction      = 0;
     breakDepth      = 0;
+    hasTopLevelStmts = 0;
 
     /* The built-in: print(x) */
     functions[functionCount].name       = strdup("print");
@@ -147,6 +159,7 @@ static void printSemanticScopes() {
 static int isReservedName(const char* name) {
     if (!name || !name[0]) return 0;
     if (strncmp(name, "__sw", 4) == 0) return 1;          /* switch temporaries */
+    if (strstr(name, "__")) return 1;                     /* renamed locals x__1 */
     if (name[0] != 't' && name[0] != 'L') return 0;
     if (!name[1]) return 0;
     for (int i = 1; name[i]; i++)
@@ -161,7 +174,8 @@ static void reportReserved(const char* name, int lineno) {
     fprintf(stderr, "  📍 Location: Line %d\n", lineno);
     fprintf(stderr, "  ❌ Error: '%s' is reserved for the compiler's own use\n", name);
     fprintf(stderr, "  📖 Note: names of the form t0, t1, ... are three-address-code\n");
-    fprintf(stderr, "           temporaries and L0, L1, ... are generated labels.\n");
+    fprintf(stderr, "           temporaries, L0, L1, ... are generated labels, and\n");
+    fprintf(stderr, "           names containing \"__\" are used for renamed locals.\n");
     fprintf(stderr, "  💡 Suggestion: rename the variable, for example '%s_' or 'total'\n\n", name);
 }
 
@@ -187,6 +201,7 @@ static int addVarToScope(char* name) {
     }
 
     currentScope->names[currentScope->count] = strdup(name);
+    currentScope->isArr[currentScope->count] = 0;
     currentScope->count++;
     return 0;
 }
@@ -214,6 +229,7 @@ static int addArrayToScope(char* name, int size) {
     }
 
     currentScope->names[currentScope->count] = strdup(name);
+    currentScope->isArr[currentScope->count] = 1;
     currentScope->count++;
     return 0;
 }
@@ -229,6 +245,39 @@ static int isVarDeclaredInScope(char* name) {
         }
     }
     return 0;
+}
+
+/* What does a name denote HERE?  -1 undeclared, 0 scalar, 1 array.
+ * Innermost scope first, so a local scalar hides a global array. */
+static int lookupKind(const char* name) {
+    for (int depth = scopeDepth - 1; depth >= 0; depth--)
+        for (int i = 0; i < scopes[depth].count; i++)
+            if (strcmp(scopes[depth].names[i], name) == 0)
+                return scopes[depth].isArr[i];
+    return -1;
+}
+
+/* One boxed error header, shared by the checks restored in Project 4. */
+static void errorHeader(const char* title, int lineno) {
+    fprintf(stderr, "\n╔════════════════════════════════════════════════════════════╗\n");
+    fprintf(stderr, "║ SEMANTIC ERROR - %-42s║\n", title);
+    fprintf(stderr, "╚════════════════════════════════════════════════════════════╝\n");
+    if (lineno > 0) fprintf(stderr, "  📍 Location: Line %d\n", lineno);
+    semInfo.errorCount++;
+}
+
+/* Flatten a (left-nested) ARG_LIST into source order: out[0] is argument 1.
+ * Every argument must be visited, so that an undeclared name in ANY position
+ * is reported (before Project 4's fix only the last two of a 3+ argument
+ * call were checked, and the rest crashed the code generator). */
+static int flattenArgs(ASTNode* a, ASTNode** out, int n, int max) {
+    if (!a) return n;
+    if (a->type == NODE_ARG_LIST) {
+        n = flattenArgs(a->data.arg_list.expr, out, n, max);
+        return flattenArgs(a->data.arg_list.next, out, n, max);
+    }
+    if (n < max) out[n] = a;
+    return n + 1;
 }
 
 /* Function management */
@@ -369,6 +418,14 @@ static void checkExpr(ASTNode* node) {
                 fprintf(stderr, "     → int %s;  (add this before line %d)\n", node->data.name, node->lineno);
                 fprintf(stderr, "  📖 Note: In C-minus, all variables must be declared before use\n\n");
                 semInfo.errorCount++;
+            } else if (lookupKind(node->data.name) == 1) {
+                /* An array name is an ADDRESS.  The only place it may appear
+                 * bare is as an argument to an array parameter (checked in
+                 * NODE_FUNC_CALL, which never sends it here). */
+                errorHeader("Array Used as a Value", node->lineno);
+                fprintf(stderr, "  ❌ Error: '%s' is an array; use an element such as %s[i]\n",
+                        node->data.name, node->data.name);
+                fprintf(stderr, "  📖 Note: a bare array name may only be passed to an int[] parameter\n\n");
             }
             break;
 
@@ -420,15 +477,25 @@ static void checkExpr(ASTNode* node) {
                            node->data.func_call.name);
                 }
 
-                /* Check argument expressions */
-                ASTNode* arg = node->data.func_call.args;
-                while (arg) {
-                    if (arg->type == NODE_ARG_LIST) {
-                        checkExpr(arg->data.arg_list.expr);
-                        arg = arg->data.arg_list.next;
-                    } else {
-                        checkExpr(arg);
-                        break;
+                /* Check EVERY argument, in source order.  Where the parameter
+                 * is an array (int a[]) the argument must be a bare array
+                 * name; everywhere else it is an ordinary scalar expression. */
+                ASTNode* args[MAX_PARAMS];
+                int n = flattenArgs(node->data.func_call.args, args, 0, MAX_PARAMS);
+                if (n > MAX_PARAMS) n = MAX_PARAMS;
+                for (int i = 0; i < n; i++) {
+                    int wantsArray = (i < func->paramCount) && func->paramIsArray[i];
+                    if (!wantsArray) { checkExpr(args[i]); continue; }
+                    ASTNode* a = args[i];
+                    int kind = (a->type == NODE_VAR) ? lookupKind(a->data.name) : 0;
+                    if (a->type == NODE_VAR && kind == -1) {
+                        checkExpr(a);                    /* undeclared */
+                    } else if (kind != 1) {
+                        errorHeader("Scalar Passed Where Array Expected", node->lineno);
+                        fprintf(stderr, "  ❌ Error: '%s' expects an ARRAY for parameter %d, gets a scalar\n",
+                                node->data.func_call.name, i + 1);
+                        fprintf(stderr, "  💡 Suggestion: pass the array's name, e.g. %s(myArray)\n\n",
+                                node->data.func_call.name);
                     }
                 }
             }
@@ -447,6 +514,12 @@ static void checkExpr(ASTNode* node) {
                 fprintf(stderr, "     → int %s[SIZE];  (replace SIZE with the desired array length)\n", node->data.array_index.name);
                 fprintf(stderr, "  📖 Example: int %s[10];  // Declares an array of 10 integers\n\n", node->data.array_index.name);
                 semInfo.errorCount++;
+            } else if (lookupKind(node->data.array_index.name) == 0) {
+                errorHeader("Indexing a Scalar", node->lineno);
+                fprintf(stderr, "  ❌ Error: '%s' is a scalar, so '%s[...]' has no meaning\n",
+                        node->data.array_index.name, node->data.array_index.name);
+                fprintf(stderr, "  💡 Suggestion: declare it as an array, e.g. int %s[10];\n\n",
+                        node->data.array_index.name);
             }
             /* Check index expression */
             checkExpr(node->data.array_index.index);
@@ -502,6 +575,12 @@ static void checkStmt(ASTNode* node) {
                     fprintf(stderr, "       int %s;\n", node->data.assign.var);
                     fprintf(stderr, "  📖 Remember: Variables must be declared before use in C-minus\n\n");
                     semInfo.errorCount++;
+                } else if (lookupKind(node->data.assign.var) == 1) {
+                    errorHeader("Assignment to a Whole Array", node->lineno);
+                    fprintf(stderr, "  ❌ Error: '%s' is an array; arrays cannot be assigned as a whole\n",
+                            node->data.assign.var);
+                    fprintf(stderr, "  💡 Suggestion: assign one element at a time, e.g. %s[i] = ...;\n\n",
+                            node->data.assign.var);
                 } else {
                     trace("  ✓ Assignment to '%s' is valid (line %d)\n", node->data.assign.var, node->lineno);
                 }
@@ -663,13 +742,20 @@ static void checkStmtList(ASTNode* node) {
 static void addParamsToScope(ASTNode* param) {
     if (!param) return;
 
-    if (param->type == NODE_PARAM) {
-        addVarToScope(param->data.param.name);
-        trace("  ✓ Parameter '%s' added to function scope\n", param->data.param.name);
-    } else if (param->type == NODE_ARRAY_DECL && param->data.array_decl.isParam) {
-        addArrayToScope(param->data.array_decl.name, 0);
-        trace("  ✓ Array parameter '%s[]' added to function scope\n",
-               param->data.array_decl.name);
+    if (param->type == NODE_PARAM || param->type == NODE_ARRAY_DECL) {
+        int isArr = (param->type == NODE_ARRAY_DECL);
+        char* name = isArr ? param->data.array_decl.name : param->data.param.name;
+        if (isReservedName(name)) {
+            reportReserved(name, param->lineno);
+            semInfo.errorCount++;
+        } else if ((isArr ? addArrayToScope(name, 0) : addVarToScope(name)) == -1) {
+            /* Previously ignored: int f(int a, int a) compiled silently. */
+            errorHeader("Duplicate Parameter", param->lineno);
+            fprintf(stderr, "  ❌ Error: parameter '%s' appears twice in one parameter list\n\n", name);
+        } else {
+            trace("  ✓ Parameter '%s%s' added to function scope (%s)\n", name,
+                  isArr ? "[]" : "", isArr ? "by reference" : "by value");
+        }
     } else if (param->type == NODE_PARAM_LIST) {
         // Recursively process nested param list
         addParamsToScope(param->data.param_list.param);
@@ -700,8 +786,14 @@ static void checkFuncDef(ASTNode* node) {
         printSemanticScopes();
     }
 
-    /* Check function body */
-    checkStmt(node->data.func_def.body);
+    /* Check function body.  DESIGN CHOICE (as in C, restored from Project 3):
+     * the parameters and the body's OUTERMOST declarations share one scope,
+     * so  int f(int p) { int p; }  is a redeclaration.  So the body's block
+     * is walked as a statement list, not as a BLOCK that would open a new
+     * scope.  Nested blocks (including loop bodies) still get their own. */
+    ASTNode* body = node->data.func_def.body;
+    if (body && body->type == NODE_BLOCK) checkStmtList(body->data.block.stmt_list);
+    else checkStmt(body);
 
     /* Exit function scope */
     trace("  Exiting function '%s' scope\n", currentFunction);
@@ -718,7 +810,27 @@ static void registerFunction(ASTNode* node) {
     char* paramNames[MAX_PARAMS];
     int paramIsArray[MAX_PARAMS];
     int paramCount = countParams(node->data.func_def.params, paramNames, paramIsArray);
-    addFunction(node->data.func_def.name, paramCount, paramNames, paramIsArray);
+
+    /* A duplicate is reported HERE (pass 1) with both line numbers, so it
+     * comes first and names the original definition. */
+    FunctionSymbol* existing = findFunction(node->data.func_def.name);
+    if (existing) {
+        errorHeader("Duplicate Function Definition", node->lineno);
+        fprintf(stderr, "  ❌ Error: function '%s' is already defined on line %d\n",
+                node->data.func_def.name, existing->lineno);
+        fprintf(stderr, "  💡 Suggestion: remove one definition, or rename one of them\n\n");
+        return;
+    }
+    if (addFunction(node->data.func_def.name, paramCount, paramNames, paramIsArray) == 0)
+        findFunction(node->data.func_def.name)->lineno = node->lineno;
+
+    if (paramCount > MAX_REG_ARGS) {
+        errorHeader("Too Many Parameters", node->lineno);
+        fprintf(stderr, "  ❌ Error: '%s' has %d parameters; at most %d are supported\n",
+                node->data.func_def.name, paramCount, MAX_REG_ARGS);
+        fprintf(stderr, "  📖 Note: arguments travel in $a0-$a3 in this compiler's calling\n");
+        fprintf(stderr, "           convention; stack-passed arguments are not implemented\n\n");
+    }
 }
 
 /* Helper to recursively register all functions in AST */
@@ -753,8 +865,36 @@ static void checkFunctions(ASTNode* node) {
         } else {
             trace("  ✓ Global variable '%s' declared\n", node->data.decl.name);
         }
+    } else if (node->type == NODE_ARRAY_DECL) {
+        checkStmt(node);                  /* a global array */
     } else {
+        /* An executable statement at FILE scope: part of the implicit
+         * main().  Checked in the global scope with no enclosing function. */
+        hasTopLevelStmts = 1;
         checkStmt(node);
+    }
+}
+
+/* Exactly one entry point: an explicit main() OR file-scope statements
+ * (which become an implicit main), never both and never neither. */
+static void checkEntryPoint(void) {
+    FunctionSymbol* m = findFunction("main");
+    if (m && hasTopLevelStmts) {
+        errorHeader("Statements Outside main", m->lineno);
+        fprintf(stderr, "  ❌ Error: the program defines main() AND has executable statements\n");
+        fprintf(stderr, "           at file scope; those statements could never run\n");
+        fprintf(stderr, "  💡 Suggestion: move them into main()\n\n");
+    } else if (!m && !hasTopLevelStmts) {
+        errorHeader("No main Function", 0);
+        fprintf(stderr, "  ❌ Error: the program has no entry point\n");
+        fprintf(stderr, "  💡 Suggestion: add  int main() { ... return 0; }\n\n");
+    } else if (m && m->paramCount != 0) {
+        errorHeader("main Takes No Parameters", m->lineno);
+        fprintf(stderr, "  ❌ Error: main() is declared with %d parameter(s)\n\n", m->paramCount);
+    } else if (!m) {
+        trace("  ✓ File-scope statements form an implicit main()\n");
+    } else {
+        trace("  ✓ Entry point: main() on line %d\n", m->lineno);
     }
 }
 
@@ -783,6 +923,7 @@ int performSemanticAnalysis(ASTNode* root) {
     trace("Pass 2: Checking function bodies\n");
     trace("─────────────────────────────────\n");
     checkFunctions(root);
+    checkEntryPoint();
 
     /* Exit global scope */
     exitScope();

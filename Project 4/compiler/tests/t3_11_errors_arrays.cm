@@ -1,0 +1,16 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * Array misuse:
+ *   line 10: array size 0
+ *   line 12: indexing a scalar
+ *   line 13: an array used as a plain value
+ *   line 14: assigning to a whole array
+ * Expected: 4 semantic errors, exit code 1. */
+int main() {
+    int n;
+    int empty[0];
+    int a[5];
+    n = n[2];
+    n = a + 1;
+    a = 3;
+    return 0;
+}

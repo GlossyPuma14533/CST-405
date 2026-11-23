@@ -1,0 +1,41 @@
+/* Expected output: 55  6765  10  40  120  9
+ * Loops working together with everything from Topic 3:
+ *   - loops inside functions (with parameters and locals)
+ *   - a function call inside a loop CONDITION (re-evaluated every test)
+ *   - an array filled by one loop and passed by reference to another
+ *   - recursion called from inside a loop body                          */
+int calls;
+int sumTo(int n) {
+    int s; int k;
+    s = 0;
+    for (k = 1; k <= n; k = k + 1) s = s + k;
+    return s;
+}
+int fib(int n) {
+    int a; int b; int t;
+    a = 0; b = 1;
+    while (n > 0) { t = a + b; a = b; b = t; n = n - 1; }
+    return a;
+}
+int next() { calls = calls + 1; return calls; }
+int total(int v[], int n) {
+    int i; int s;
+    s = 0; i = 0;
+    while (i < n) { s = s + v[i]; i = i + 1; }
+    return s;
+}
+int main() {
+    int a[5]; int i; int x;
+    print(sumTo(10));                 /* 55   */
+    print(fib(20));                   /* 6765 */
+    calls = 0;
+    while (next() < 10) { }           /* next() runs on every test */
+    print(calls);                     /* 10   */
+    for (i = 0; i < 5; i = i + 1) a[i] = i * 4;
+    print(total(a, 5));               /* 0+4+8+12+16 = 40 */
+    x = 1;
+    for (i = 1; i <= 5; i = i + 1) x = x * i;
+    print(x);                         /* 120  */
+    print(i + 3);                     /* 9    */
+    return 0;
+}

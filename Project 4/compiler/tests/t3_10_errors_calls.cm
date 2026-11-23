@@ -1,0 +1,18 @@
+/* THIS PROGRAM IS SUPPOSED TO FAIL.
+ * Call checking — every error is reported, each with its own line:
+ *   line 13: 'add2' called with 3 arguments, it takes 2
+ *   line 14: 'missing' is not defined anywhere
+ *   line 15: 'sum' expects an ARRAY for parameter 1, gets a scalar
+ *   line 18: 'add2' is defined twice (first on line 10) — reported FIRST,
+ *            because pass 1 (signatures) runs before pass 2 (bodies)
+ * Expected: 4 semantic errors, exit code 1. */
+int sum(int a[]) { return a[0]; }
+int add2(int a, int b) { return a + b; }
+int main() {
+    int x;
+    x = add2(1, 2, 3);
+    x = missing(x);
+    x = sum(x);
+    return 0;
+}
+int add2(int p, int q) { return p - q; }

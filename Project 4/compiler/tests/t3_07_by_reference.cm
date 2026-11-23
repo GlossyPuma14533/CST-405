@@ -1,0 +1,32 @@
+/* Expected output: 0  10  20  30  30  25  13  7
+ * Arrays are passed BY REFERENCE: the callee receives the base ADDRESS, so
+ * writes it makes are visible to the caller.  Also: computed indices,
+ * forwarding an array parameter to another function, and global arrays. */
+int g[3];
+int fill(int a[], int n, int step) {      /* writes INTO the caller's array */
+    a[0] = 0;
+    a[1] = step;
+    a[2] = step * 2;
+    a[n - 1] = step * (n - 1);            /* computed index */
+    return n;
+}
+int sum(int a[], int n) { return a[0] + a[1] + a[2] + a[n - 1] - a[n - 1]; }
+int total(int a[]) { return sum(a, 3); }  /* forward an array parameter */
+int main() {
+    int local[4];
+    int i;
+    fill(local, 4, 10);                   /* call used as a statement */
+    i = 0;
+    print(local[i]);                      /* 0  */
+    print(local[i + 1]);                  /* 10 */
+    print(local[2 * (i + 1)]);            /* 20 */
+    print(local[3]);                      /* 30 — written by the callee */
+    print(total(local));                  /* 30 = 0 + 10 + 20 */
+    g[0] = 5; g[1] = 8; g[2] = 12;
+    print(total(g));                      /* 25 — same code, global array */
+    g[g[0] - 4] = g[1] + g[0];            /* g[1] = 13 */
+    print(g[1]);                          /* 13 */
+    local[local[1] / 10] = -(g[0] - 12);  /* local[1] = 7 */
+    print(local[1]);                      /* 7  */
+    return 0;
+}

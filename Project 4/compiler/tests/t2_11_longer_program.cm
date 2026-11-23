@@ -1,0 +1,23 @@
+/* Expected output: 3  6  12  24  48  99
+ * A longer program for the end-to-end demo: a variable that is read and
+ * rewritten repeatedly (x = x + x doubles it), several live variables at
+ * once, and an expression that mixes variables and literals.
+ * Every value is known at compile time, so constant propagation + folding
+ * reduce each PRINT to a literal — compare the .tac and .optimized.tac. */
+int x;
+int sum;
+int step;
+
+x = 3;
+print(x);
+x = x + x;
+print(x);
+x = x + x;
+print(x);
+x = x + x;
+print(x);
+x = x + x;
+print(x);
+step = 1 + 2;
+sum = x + x + step + 0;   // x + 0 style identity for the optimizer
+print(sum);

@@ -11,10 +11,8 @@
  * WHAT COMES NEXT
  *   Topic 5 adds decisions (if, if-else, switch) and the logical operators.
  *
- * YOUR TASK
- *   Everything below marked  TODO (Topic 4)  is yours to write.
- *   Everything else already works — it is the Topic 3 compiler you
- *   have already built and tested.  Do not rewrite it; extend it.
+ * STATUS
+ *   Every TODO (Topic 4) in this file has been implemented.
  * ========================================================================= */
 
 #ifndef TAC_H
@@ -139,11 +137,16 @@ typedef struct {
     int deadCode;            /* Assignments removed as never read          */
     int unreachable;         /* Instructions removed as unreachable        */
     int branch;              /* Constant-condition branches simplified     */
+    int loopConst;           /* Uses replaced by a pinned (loop-safe) const */
+    int jumpNext;            /* GOTOs to the very next label removed       */
+    int coalesce;            /* "t = a op b ; v = t" rewritten "v = a op b" */
+    int redundantStore;      /* "x = k" removed when x is known to be k    */
 } OptStats;
 
 /* TAC OPTIMIZATION AND OUTPUT */
 void printTAC(void);                        /* Display unoptimized listing        */
 void optimizeTAC(void);                     /* Run optimization to a fixed point  */
+void skipOptimization(void);                /* -O0: optimized list = raw TAC copy  */
 void printOptimizedTAC(void);               /* Display optimized listing          */
 TACList* getOptimizedTAC(void);             /* The list the back end consumes     */
 TACList* getUnoptimizedTAC(void);           /* The list before optimization       */
