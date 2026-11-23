@@ -8,8 +8,8 @@
 
 | Team member | Video |
 |---|---|
-| Christoffer Hansen | _(add link)_ |
-| Emma Schaffner | _(add link)_ |
+| Christoffer Hansen | https://www.loom.com/share/2b8a673a89164fe08a630d245656df15 |
+| Emma Schaffner | https://www.loom.com/share/018c201e5206453096af8ef829db4016 |
 
 ## Who did what
 
