@@ -1,0 +1,14 @@
+/* Expected output: 1  0  7
+ * Relational binds LOOSER than arithmetic. With a=1, b=2:
+ *   a + 1 < b * 2   correct: (a+1)<(b*2) = 2<4 = 1     wrong: a+(1<b)*2 = 3
+ *   a + 1 > b * 2   correct: 2>4 = 0                    wrong: a+(1>b)*2 = 1
+ * Each result differs under the wrong grouping, so this test cannot pass
+ * by accident. The last line checks * binds tighter than + and -. */
+int main() {
+    int a; int b;
+    a = 1; b = 2;
+    print(a + 1 < b * 2);
+    print(a + 1 > b * 2);
+    print(2 + 3 * 4 - 7);
+    return 0;
+}

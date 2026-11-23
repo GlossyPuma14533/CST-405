@@ -1,0 +1,15 @@
+/* Expected output: 33  3
+ * break leaves ONLY the innermost loop. Each outer iteration adds 1 (inner,
+ * then break) + 10 = 11, three times = 33. If break wrongly left the outer
+ * loop, the result would be 1 and i would be 0. */
+int main() {
+    int i; int c;
+    c = 0;
+    for (i = 0; i < 3; i = i + 1) {
+        while (1) { c = c + 1; break; }
+        c = c + 10;
+    }
+    print(c);
+    print(i);
+    return 0;
+}
